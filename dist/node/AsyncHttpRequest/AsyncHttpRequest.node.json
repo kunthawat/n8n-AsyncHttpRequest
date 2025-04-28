@@ -1,0 +1,105 @@
+{
+    "node": "n8n-nodes-base.asyncHttpRequest",
+    "nodeIdentifier": "n8n-nodes-base.asyncHttpRequest",
+    "displayName": "Async HTTP Request",
+    "name": "asyncHttpRequest",
+    "icon": "fa:exchange-alt",
+    "group": [
+      "helpers"
+    ],
+    "version": 1,
+    "description": "Sends an HTTP request and optionally waits for a correlated asynchronous response via webhook.",
+    "defaults": {
+      "name": "Async HTTP Request"
+    },
+    "inputs": [
+      "main"
+    ],
+    "outputs": [
+      "main"
+    ],
+    "credentials": [
+      {
+        "name": "httpBasicAuth",
+        "required": false,
+        "displayOptions": {
+          "show": {
+            "authentication": [
+              "basicAuth"
+            ]
+          }
+        }
+      },
+      {
+        "name": "httpDigestAuth",
+        "required": false,
+        "displayOptions": {
+          "show": {
+            "authentication": [
+              "digestAuth"
+            ]
+          }
+        }
+      },
+      {
+        "name": "httpHeaderAuth",
+        "required": false,
+        "displayOptions": {
+          "show": {
+            "authentication": [
+              "headerAuth"
+            ]
+          }
+        }
+      },
+      {
+        "name": "httpOAuth1Api",
+        "required": false,
+        "displayOptions": {
+          "show": {
+            "authentication": [
+              "oAuth1"
+            ]
+          }
+        }
+      },
+      {
+        "name": "httpOAuth2Api",
+        "required": false,
+        "displayOptions": {
+          "show": {
+            "authentication": [
+              "oAuth2"
+            ]
+          }
+        }
+      },
+      {
+          "name": "queryAuthApi",
+          "required": false,
+          "displayOptions": {
+              "show": {
+                  "authentication": [
+                      "queryAuth"
+                  ]
+              }
+          }
+      }
+    ],
+    "properties": [
+      // JSON representation of all properties defined in the TS description object...
+      // (This would be a long JSON array mirroring the structure above)
+      // Example for URL property:
+      {
+          "displayName": "URL",
+          "name": "url",
+          "type": "string",
+          "required": true,
+          "default": "",
+          "placeholder": "http://example.com/resource",
+          "description": "The URL to send the request to"
+      },
+      // ... all other properties would follow in this JSON format
+    ]
+  }
+  

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <title>Async HTTP Request Icon</title>
+  <style>
+    /* Basic styling for the icon elements */
+    .icon-arrow { fill: #4A4A4A; /* A neutral dark grey */ stroke: none; }
+    .icon-wait { fill: none; stroke: #4A4A4A; stroke-width: 7px; stroke-linecap: round; stroke-linejoin: round; }
+  </style>
+
+  <!-- Request Arrow (Pointing Right) -->
+  <!-- Draws a horizontal bar with a triangle arrowhead -->
+  <path class="icon-arrow" d="M 8 38 H 63 V 32 L 78 42 L 63 52 V 46 H 8 Z" />
+
+  <!-- Response Arrow (Pointing Left) -->
+  <!-- Draws another horizontal bar with a triangle arrowhead -->
+  <path class="icon-arrow" d="M 92 62 H 37 V 68 L 22 58 L 37 48 V 54 H 92 Z" />
+
+  <!-- Simplified Hourglass/Wait Symbol (Top Right Corner) -->
+  <!-- Grouped and transformed to position and scale -->
+  <g transform="translate(72 8) scale(0.22)">
+    <!-- Draws the outline of a simple hourglass -->
+    <path class="icon-wait" d="M 10 10 H 90 M 10 90 H 90 M 10 10 L 90 90 M 90 10 L 10 90"/>
+  </g>
+</svg>
