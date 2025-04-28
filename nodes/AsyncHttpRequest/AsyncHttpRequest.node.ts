@@ -1,934 +1,812 @@
 import {
 	IExecuteFunctions,
+	INodeExecutionData,
 	INodeType,
 	INodeTypeDescription,
-	INodeExecutionData,
 	NodeOperationError,
-	IHttpRequestOptions,
-	IHttpRequestMethods,
-	IDataObject,
-	NodeApiError,
-	IWebhookFunctions,
-	// Removed: BinaryHelperFunctions, RequestHelperFunctions
-	NodeExecutionWithMetadata,
-	INode,
-	IWebhookResponseData,
-	// Removed: IBinaryKeyData, IPairedItemData, GenericValue
-	IAllExecuteFunctions, // Import for helper 'this' context if needed
-} from 'n8n-workflow';
-
-import { v4 as uuidv4 } from 'uuid';
-import * as objectPath from 'object-path';
-
-// --- Interfaces --- (Keep existing interfaces: IWebhookConfig, IWebhookListener, IWebhookRequestObject)
-
-interface IWebhookConfig {
-	webhookMethod?: 'POST' | 'GET' | 'PUT';
-	correlationIdLocationInRequest?: 'query' | 'header' | 'bodyJsonPath' | 'none';
-	correlationIdParameterName?: string;
-	callbackUrlParameterNameInRequest?: string;
-	callbackUrlLocationInRequest?: 'query' | 'header' | 'bodyJsonPath';
-	correlationIdLocationInWebhook?: 'query' | 'header' | 'bodyJsonPath';
-	correlationIdParameterNameInWebhook?: string;
-	timeoutWebhook?: number;
-	webhookResponseIncludes?: Array<'body' | 'headers' | 'query'>;
-}
-
-interface IWebhookListener {
-	resolve: (data: IDataObject) => void;
-	reject: (reason?: any) => void;
-	timeoutTimer: NodeJS.Timeout;
-	expectedMethod: string;
-	correlationId: string;
-	webhookConfig: IWebhookConfig;
-	itemIndex: number;
-}
-
-interface IWebhookRequestObject {
-	headers: IDataObject;
-	params: IDataObject;
-	query: IDataObject;
-	body: IDataObject | string | unknown;
-	method?: string;
-	path?: string;
-}
-
-// --- Type Guard ---
-function isNodeApiError(error: any): error is NodeApiError {
-	return error instanceof NodeApiError && typeof error.context === 'object';
-}
-
-
-// --- Node Class ---
-export class AsyncHttpRequest implements INodeType {
+  } from 'n8n-workflow';
+  import { OptionsWithUri } from 'request-promise-native';
+  import { BINARY_ENCODING, jsonParse } from 'n8n-workflow';
+  import * as crypto from 'crypto';
+  
+  
+  export class HttpWebhookRequest implements INodeType {
 	description: INodeTypeDescription = {
-		displayName: 'Async HTTP Request',
-		name: 'asyncHttpRequest',
-		icon: 'fa:exchange-alt',
-		group: ['helpers'],
-		version: 1,
-		description: 'Sends HTTP request, waits for async webhook response.',
-		defaults: {
-			name: 'Async HTTP Request',
+	  displayName: 'HTTP Webhook Request',
+	  name: 'httpWebhookRequest',
+	  icon: 'fa:exchange-alt',
+	  group: ['output'],
+	  version: 1,
+	  subtitle: '={{$parameter["method"] + ": " + $parameter["url"]}}',
+	  description: 'Makes an HTTP request and waits for webhook response',
+	  defaults: {
+		name: 'HTTP Webhook Request',
+		color: '#2200DD',
+	  },
+	  inputs: ['main'],
+	  outputs: ['main'],
+	  credentials: [
+		{
+		  name: 'httpBasicAuth',
+		  required: false,
+		  displayOptions: {
+			show: {
+			  authentication: ['basicAuth'],
+			},
+		  },
 		},
-		// inputs: ['main'], // Defaults to main
-		// outputs: ['main'], // Defaults to main
-		credentials: [
-			// Credentials remain the same
+		{
+		  name: 'httpDigestAuth',
+		  required: false,
+		  displayOptions: {
+			show: {
+			  authentication: ['digestAuth'],
+			},
+		  },
+		},
+		{
+		  name: 'httpHeaderAuth',
+		  required: false,
+		  displayOptions: {
+			show: {
+			  authentication: ['headerAuth'],
+			},
+		  },
+		},
+		{
+		  name: 'httpQueryAuth',
+		  required: false,
+		  displayOptions: {
+			show: {
+			  authentication: ['queryAuth'],
+			},
+		  },
+		},
+		{
+		  name: 'oAuth1Api',
+		  required: false,
+		  displayOptions: {
+			show: {
+			  authentication: ['oAuth1'],
+			},
+		  },
+		},
+		{
+		  name: 'oAuth2Api',
+		  required: false,
+		  displayOptions: {
+			show: {
+			  authentication: ['oAuth2'],
+			},
+		  },
+		},
+	  ],
+	  properties: [
+		{
+		  displayName: 'Method',
+		  name: 'method',
+		  type: 'options',
+		  options: [
 			{
-				name: 'httpBasicAuth',
-				required: false,
-				displayOptions: { show: { authentication: ['basicAuth'] } },
+			  name: 'DELETE',
+			  value: 'DELETE',
 			},
 			{
-				name: 'httpDigestAuth',
-				required: false,
-				displayOptions: { show: { authentication: ['digestAuth'] } },
+			  name: 'GET',
+			  value: 'GET',
 			},
 			{
-				name: 'httpHeaderAuth',
-				required: false,
-				displayOptions: { show: { authentication: ['headerAuth'] } },
+			  name: 'HEAD',
+			  value: 'HEAD',
 			},
 			{
-				name: 'httpOAuth1Api',
-				required: false,
-				displayOptions: { show: { authentication: ['oAuth1'] } },
+			  name: 'OPTIONS',
+			  value: 'OPTIONS',
 			},
 			{
-				name: 'httpOAuth2Api',
-				required: false,
-				displayOptions: { show: { authentication: ['oAuth2'] } },
+			  name: 'PATCH',
+			  value: 'PATCH',
 			},
 			{
-				name: 'queryAuthApi',
-				required: false,
-				displayOptions: { show: { authentication: ['queryAuth'] } },
+			  name: 'POST',
+			  value: 'POST',
 			},
-		],
-		properties: [
-			// Properties remain the same
-			// URL
 			{
-				displayName: 'URL',
-				name: 'url',
-				type: 'string',
-				required: true,
-				default: '',
-				placeholder: 'http://example.com/resource',
-				description: 'The URL to send the request to',
+			  name: 'PUT',
+			  value: 'PUT',
 			},
-			// Method
+		  ],
+		  default: 'GET',
+		  description: 'The request method to use',
+		},
+		{
+		  displayName: 'URL',
+		  name: 'url',
+		  type: 'string',
+		  default: '',
+		  placeholder: 'http://example.com/index.html',
+		  description: 'The URL to make the request to',
+		  required: true,
+		},
+		{
+		  displayName: 'Wait For Webhook Response',
+		  name: 'waitForWebhook',
+		  type: 'boolean',
+		  default: true,
+		  description: 'Whether to wait for response via webhook',
+		},
+		{
+		  displayName: 'Webhook Timeout',
+		  name: 'webhookTimeout',
+		  type: 'number',
+		  displayOptions: {
+			show: {
+			  waitForWebhook: [true],
+			},
+		  },
+		  default: 300,
+		  description: 'Maximum time (in seconds) to wait for webhook response',
+		},
+		{
+		  displayName: 'Webhook Correlation Field',
+		  name: 'webhookCorrelationField',
+		  type: 'string',
+		  displayOptions: {
+			show: {
+			  waitForWebhook: [true],
+			},
+		  },
+		  default: 'requestId',
+		  description: 'Field in webhook payload used to correlate with original request',
+		},
+		{
+		  displayName: 'Webhook Correlation Value From',
+		  name: 'webhookCorrelationValueFrom',
+		  type: 'options',
+		  displayOptions: {
+			show: {
+			  waitForWebhook: [true],
+			},
+		  },
+		  options: [
 			{
-				displayName: 'Method',
-				name: 'method',
-				type: 'options',
-				options: [
-					{ name: 'DELETE', value: 'DELETE' },
-					{ name: 'GET', value: 'GET' },
-					{ name: 'HEAD', value: 'HEAD' },
-					{ name: 'OPTIONS', value: 'OPTIONS' },
-					{ name: 'PATCH', value: 'PATCH' },
-					{ name: 'POST', value: 'POST' },
-					{ name: 'PUT', value: 'PUT' },
-				],
-				required: true,
-				default: 'GET',
-				description: 'The HTTP method to use for the request',
+			  name: 'Random ID',
+			  value: 'random',
 			},
-			// Authentication
 			{
-				displayName: 'Authentication',
-				name: 'authentication',
-				type: 'options',
-				options: [
-					{ name: 'None', value: 'none' },
-					{ name: 'Basic Auth', value: 'basicAuth' },
-					{ name: 'Digest Auth', value: 'digestAuth' },
-					{ name: 'Header Auth', value: 'headerAuth' },
-					{ name: 'OAuth1', value: 'oAuth1' },
-					{ name: 'OAuth2', value: 'oAuth2' },
-					{ name: 'Query Auth', value: 'queryAuth' },
-				],
-				default: 'none',
-				description: 'The authentication method to use',
+			  name: 'Response Field',
+			  value: 'responseField',
 			},
-			// Send Body Toggle
 			{
-				displayName: 'Send Body',
-				name: 'sendBody',
-				type: 'boolean',
-				default: false,
-				description: 'Whether to send a body with the request',
-				displayOptions: { show: { method: ['PATCH', 'POST', 'PUT'] } },
+			  name: 'Custom Value',
+			  value: 'custom',
 			},
-			// Body Content Type
+		  ],
+		  default: 'random',
+		  description: 'How to determine the correlation value',
+		},
+		{
+		  displayName: 'Response Field',
+		  name: 'responseField',
+		  type: 'string',
+		  displayOptions: {
+			show: {
+			  waitForWebhook: [true],
+			  webhookCorrelationValueFrom: ['responseField'],
+			},
+		  },
+		  default: 'id',
+		  description: 'Field in initial response to use as correlation value',
+		},
+		{
+		  displayName: 'Correlation Value',
+		  name: 'correlationValue',
+		  type: 'string',
+		  displayOptions: {
+			show: {
+			  waitForWebhook: [true],
+			  webhookCorrelationValueFrom: ['custom'],
+			},
+		  },
+		  default: '',
+		  description: 'Custom value to use for correlation',
+		},
+		{
+		  displayName: 'Authentication',
+		  name: 'authentication',
+		  type: 'options',
+		  options: [
 			{
-				displayName: 'Body Content Type',
-				name: 'contentType',
-				type: 'options',
-				displayOptions: { show: { sendBody: [true], method: ['PATCH', 'POST', 'PUT'] } },
-				options: [
-					{ name: 'Form-Data Multipart', value: 'multipart-form-data' },
-					{ name: 'Form-URL-Encoded', value: 'form-urlencoded' },
-					{ name: 'JSON', value: 'json' },
-					{ name: 'Raw', value: 'raw' },
-					{ name: 'N/A', value: 'none' },
-				],
-				required: true,
-				default: 'json',
-				description: 'The Content-Type to send with the request body',
+			  name: 'None',
+			  value: 'none',
 			},
-			// Raw Content Type
 			{
-				displayName: 'Raw Content Type',
-				name: 'rawContentType',
-				type: 'string',
-				default: 'text/plain',
-				required: true,
-				displayOptions: {
-					show: {
-						sendBody: [true],
-						contentType: ['raw'],
-						method: ['PATCH', 'POST', 'PUT'],
-					},
-				},
-				description: 'Content-Type header value for Raw body type',
+			  name: 'Basic Auth',
+			  value: 'basicAuth',
 			},
-			// Specify Body Options
 			{
-				displayName: 'Specify Body',
-				name: 'specifyBody',
-				type: 'options',
-				displayOptions: { show: { sendBody: [true], method: ['PATCH', 'POST', 'PUT'], contentType: ['json', 'raw', 'form-urlencoded'] } },
-				options: [
-					{ name: 'Using Fields Below', value: 'keypair' },
-					{ name: 'Using JSON', value: 'json', displayOptions: { show: { '/contentType': ['json'] } } },
-					{ name: 'Using Raw Body', value: 'raw', displayOptions: { show: { '/contentType': ['raw'] } } },
-				],
-				default: 'keypair',
-				description: 'How to specify the body content',
+			  name: 'Digest Auth',
+			  value: 'digestAuth',
 			},
-			// Body Parameters (keypair)
 			{
-				displayName: 'Body Parameters',
-				name: 'bodyParameters',
-				type: 'fixedCollection',
-				displayOptions: { show: { specifyBody: ['keypair'], sendBody: [true], method: ['PATCH', 'POST', 'PUT'], contentType: ['form-urlencoded', 'json'] } },
-				typeOptions: { multipleValues: true },
-				placeholder: 'Add Parameter',
-				default: { values: [{ name: '', value: '' }] },
-				options: [
-					{
-						name: 'values',
-						displayName: 'Parameter',
-						values: [
-							{ displayName: 'Name', name: 'name', type: 'string', default: '' },
-							{ displayName: 'Value', name: 'value', type: 'string', default: '' },
-						],
-					},
-				],
+			  name: 'Header Auth',
+			  value: 'headerAuth',
 			},
-			// JSON Body
 			{
-				displayName: 'JSON',
-				name: 'jsonBody',
-				type: 'json',
-				displayOptions: { show: { specifyBody: ['json'], sendBody: [true], method: ['PATCH', 'POST', 'PUT'], contentType: ['json'] } },
-				default: '',
-				placeholder: '{ "key": "value" }',
-				required: true,
-				description: 'The JSON body to send',
+			  name: 'Query Auth',
+			  value: 'queryAuth',
 			},
-			// Raw Body
 			{
-				displayName: 'Raw Body',
-				name: 'rawBody',
-				type: 'string',
-				typeOptions: { rows: 4 },
-				displayOptions: { show: { specifyBody: ['raw'], sendBody: [true], method: ['PATCH', 'POST', 'PUT'], contentType: ['raw'] } },
-				default: '',
-				placeholder: 'Enter raw body data...',
-				required: true,
-				description: 'The raw body content',
+			  name: 'OAuth1',
+			  value: 'oAuth1',
 			},
-			// Send Multipart Toggle
 			{
-				displayName: 'Send Form-Data',
-				name: 'sendMultipart',
-				type: 'boolean',
-				default: false,
-				description: 'Whether to send multipart form-data (Requires specifying fields)',
-				displayOptions: { show: { sendBody: [true], method: ['POST', 'PUT', 'PATCH'], contentType: ['multipart-form-data'] } },
+			  name: 'OAuth2',
+			  value: 'oAuth2',
 			},
-			// Multipart Parameters
+		  ],
+		  default: 'none',
+		  description: 'The authentication to use',
+		},
+		{
+		  displayName: 'Send Headers',
+		  name: 'sendHeaders',
+		  type: 'boolean',
+		  default: false,
+		  description: 'Whether to send custom headers',
+		},
+		{
+		  displayName: 'Headers',
+		  name: 'headerParameters',
+		  type: 'collection',
+		  displayOptions: {
+			show: {
+			  sendHeaders: [true],
+			},
+		  },
+		  placeholder: 'Add Header',
+		  default: {},
+		  options: [
 			{
-				displayName: 'Form-Data Parameters',
-				name: 'multipartParameters',
-				type: 'fixedCollection',
-				displayOptions: { show: { sendBody: [true], method: ['POST', 'PUT', 'PATCH'], contentType: ['multipart-form-data'], sendMultipart: [true] } },
-				typeOptions: { multipleValues: true },
-				placeholder: 'Add Part',
-				default: { values: [{ name: '', value: '', type: 'string' }] },
-				description: 'Define the parts of the multipart request. Use expressions for binary data.',
-				options: [
-					{
-						name: 'values',
-						displayName: 'Part',
-						values: [
-							{ displayName: 'Name', name: 'name', type: 'string', default: '', description: 'Name of the form field' },
-							{ displayName: 'Value', name: 'value', type: 'string', default: '', description: 'Value of the field. For files, use an expression resolving to binary data (e.g., {{$binary.data}}).' },
-							{ displayName: 'Type', name: 'type', type: 'options', options: [{ name: 'String', value: 'string' }, { name: 'Binary', value: 'binary' }], default: 'string', description: 'Specify if the value is a string or binary data.' },
-							{ displayName: 'Content-Type', name: 'contentType', type: 'string', default: '', description: '(Optional) Specify Content-Type for this part, especially for binary data.' },
-							{ displayName: 'Filename', name: 'filename', type: 'string', default: '', description: '(Optional) Specify filename for binary data.' },
-						],
-					},
-				],
+			  displayName: 'Header',
+			  name: 'parameter',
+			  type: 'string',
+			  default: '',
+			  description: 'Header parameters to include in the request',
 			},
-			// Send Query Toggle
+		  ],
+		},
+		{
+		  displayName: 'Query Parameters',
+		  name: 'queryParameters',
+		  type: 'collection',
+		  placeholder: 'Add Parameter',
+		  default: {},
+		  options: [
 			{
-				displayName: 'Send Query Parameters',
-				name: 'sendQuery',
-				type: 'boolean',
-				default: false,
-				description: 'Whether to send query parameters with the request',
+			  displayName: 'Parameter',
+			  name: 'parameter',
+			  type: 'string',
+			  default: '',
+			  description: 'Query parameters to include in the request',
 			},
-			// Query Parameters
+		  ],
+		},
+		{
+		  displayName: 'Body Content Type',
+		  name: 'bodyContentType',
+		  type: 'options',
+		  displayOptions: {
+			show: {
+			  method: ['PATCH', 'POST', 'PUT'],
+			},
+		  },
+		  options: [
 			{
-				displayName: 'Query Parameters',
-				name: 'queryParameters',
-				type: 'fixedCollection',
-				displayOptions: { show: { sendQuery: [true] } },
-				typeOptions: { multipleValues: true },
-				placeholder: 'Add Parameter',
-				default: { values: [{ name: '', value: '' }] },
-				options: [
-					{
-						name: 'values',
-						displayName: 'Parameter',
-						values: [
-							{ displayName: 'Name', name: 'name', type: 'string', default: '' },
-							{ displayName: 'Value', name: 'value', type: 'string', default: '' },
-						],
-					},
-				],
+			  name: 'JSON',
+			  value: 'json',
 			},
-			// Send Headers Toggle
 			{
-				displayName: 'Send Headers',
-				name: 'sendHeaders',
-				type: 'boolean',
-				default: false,
-				description: 'Whether to send custom headers with the request',
+			  name: 'Form-Data Multipart',
+			  value: 'multipart-form-data',
 			},
-			// Headers
 			{
-				displayName: 'Headers',
-				name: 'headerParameters',
-				type: 'fixedCollection',
-				displayOptions: { show: { sendHeaders: [true] } },
-				typeOptions: { multipleValues: true },
-				placeholder: 'Add Header',
-				default: { values: [{ name: '', value: '' }] },
-				options: [
-					{
-						name: 'values',
-						displayName: 'Header',
-						values: [
-							{ displayName: 'Name', name: 'name', type: 'string', default: '' },
-							{ displayName: 'Value', name: 'value', type: 'string', default: '' },
-						],
-					},
-				],
+			  name: 'Form-Encoded',
+			  value: 'form-urlencoded',
 			},
-			// Options Collection
 			{
-				displayName: 'Options',
-				name: 'options',
-				type: 'collection',
-				placeholder: 'Add Option',
-				default: {},
-				options: [
-					{ displayName: 'Ignore Response Code', name: 'ignoreResponseCode', type: 'boolean', default: false, description: 'Whether to succeed even if the HTTP status code indicates an error' },
-					{ displayName: 'Allow Unauthorized Certificates', name: 'allowUnauthorizedCerts', type: 'boolean', default: false, description: 'Whether to allow unauthorized certificates (e.g. self-signed)' },
-					{ displayName: 'Timeout (ms)', name: 'timeout', type: 'number', typeOptions: { minValue: 1 }, default: 10000, description: 'Time in milliseconds to wait for the initial request to complete' },
-					{ displayName: 'Proxy', name: 'proxy', type: 'string', default: '', placeholder: 'http://myproxy:3128', description: 'HTTP proxy to use for the request (e.g., http://user:pass@host:port)' },
-					{ displayName: 'Response Format', name: 'responseFormat', type: 'options', options: [{ name: 'Autodetect', value: 'autodetect' }, { name: 'File', value: 'file' }, { name: 'JSON', value: 'json' }, { name: 'Text', value: 'text' }], default: 'autodetect', description: 'How to format the response data' },
-					{ displayName: 'Response Character Encoding', name: 'responseCharacterEncoding', type: 'options', displayOptions: { show: { responseFormat: ['text', 'json', 'autodetect'] } }, options: [{ name: 'Autodetect', value: 'autodetect' }, { name: 'ISO-8859-1', value: 'latin1' }, { name: 'UTF-8', value: 'utf8' }], default: 'autodetect', description: 'Character encoding for text based response formats like JSON and Text.' },
-					{ displayName: 'Full Response', name: 'fullResponse', type: 'boolean', default: false, description: 'Whether to return the full response object (including headers, status code) instead of just the body' },
-				],
+			  name: 'Raw',
+			  value: 'raw',
 			},
-			// Webhook Toggle
 			{
-				displayName: 'Wait for Webhook Response',
-				name: 'waitForWebhookResponse',
-				type: 'boolean',
-				default: false,
-				description: 'Whether to wait for an asynchronous response via webhook instead of using the direct HTTP response',
+			  name: 'Binary',
+			  value: 'binaryData',
 			},
-			// Webhook Configuration
+		  ],
+		  default: 'json',
+		  description: 'Content-Type to use to send body parameters',
+		},
+		{
+		  displayName: 'Body Parameters',
+		  name: 'bodyParameters',
+		  type: 'collection',
+		  displayOptions: {
+			show: {
+			  method: ['PATCH', 'POST', 'PUT'],
+			  bodyContentType: ['json', 'multipart-form-data', 'form-urlencoded'],
+			},
+		  },
+		  placeholder: 'Add Parameter',
+		  default: {},
+		  options: [
 			{
-				displayName: 'Webhook Configuration',
-				name: 'webhookConfig',
-				type: 'collection',
-				placeholder: 'Configure Webhook Wait',
-				default: {},
-				displayOptions: { show: { waitForWebhookResponse: [true] } },
-				options: [
-					{ displayName: 'Webhook Method', name: 'webhookMethod', type: 'options', options: [{ name: 'POST', value: 'POST' }, { name: 'GET', value: 'GET' }, { name: 'PUT', value: 'PUT' }], default: 'POST', required: true, description: 'The HTTP method the external service will use to call the webhook' },
-					{ displayName: 'Correlation ID Location (in Request)', name: 'correlationIdLocationInRequest', type: 'options', options: [{ name: 'Query Parameter', value: 'query' }, { name: 'Header', value: 'header' }, { name: 'Body (JSON Path)', value: 'bodyJsonPath' }, { name: 'Do Not Send', value: 'none' }], default: 'none', description: 'Where to place the unique correlation ID in the initial outbound HTTP request (if needed by the API)' },
-					{ displayName: 'Correlation ID Parameter Name (in Request)', name: 'correlationIdParameterName', type: 'string', default: 'correlationId', required: true, displayOptions: { show: { './correlationIdLocationInRequest': ['query', 'header', 'bodyJsonPath'] } }, description: 'Name of the query parameter, header, or the JSON path (dot notation) for the correlation ID in the initial request' },
-					{ displayName: 'Callback URL Parameter Name (in Request)', name: 'callbackUrlParameterNameInRequest', type: 'string', default: 'callbackUrl', required: true, description: 'Parameter name (query, header, or body JSON path) used to send the generated webhook callback URL in the initial request' },
-					{ displayName: 'Callback URL Location (in Request)', name: 'callbackUrlLocationInRequest', type: 'options', options: [{ name: 'Query Parameter', value: 'query' }, { name: 'Header', value: 'header' }, { name: 'Body (JSON Path)', value: 'bodyJsonPath' }], default: 'bodyJsonPath', description: 'Where to place the webhook callback URL in the initial outbound HTTP request' },
-					{ displayName: 'Correlation ID Location (in Webhook)', name: 'correlationIdLocationInWebhook', type: 'options', options: [{ name: 'Query Parameter', value: 'query' }, { name: 'Header', value: 'header' }, { name: 'Body (JSON Path)', value: 'bodyJsonPath' }], required: true, default: 'bodyJsonPath', description: 'Where to find the correlation ID in the incoming webhook data to match the request' },
-					{ displayName: 'Correlation ID Parameter Name (in Webhook)', name: 'correlationIdParameterNameInWebhook', type: 'string', default: 'correlationId', required: true, description: 'Name of the query parameter, header, or the JSON path (dot notation) for the correlation ID in the webhook response' },
-					{ displayName: 'Webhook Timeout (seconds)', name: 'timeoutWebhook', type: 'number', typeOptions: { minValue: 1 }, default: 120, description: 'Maximum time (in seconds) to wait for the correct webhook response' },
-					{ displayName: 'Webhook Response Includes', name: 'webhookResponseIncludes', type: 'multiOptions', options: [{ name: 'Body', value: 'body' }, { name: 'Headers', value: 'headers' }, { name: 'Query Parameters', value: 'query' }], required: true, default: ['body'], description: 'Which parts of the incoming webhook request to include in the node output' },
-				],
+			  displayName: 'Parameter',
+			  name: 'parameter',
+			  type: 'string',
+			  default: '',
+			  description: 'Body parameters to include in the request',
 			},
-		],
-		webhooks: [
+		  ],
+		},
+		{
+		  displayName: 'Raw Body',
+		  name: 'rawBody',
+		  type: 'string',
+		  displayOptions: {
+			show: {
+			  method: ['PATCH', 'POST', 'PUT'],
+			  bodyContentType: ['raw'],
+			},
+		  },
+		  default: '',
+		  description: 'Body parameters to include in the request (raw)',
+		},
+		{
+		  displayName: 'Binary Property',
+		  name: 'binaryPropertyName',
+		  type: 'string',
+		  default: 'data',
+		  displayOptions: {
+			show: {
+			  method: ['PATCH', 'POST', 'PUT'],
+			  bodyContentType: ['binaryData'],
+			},
+		  },
+		  description: 'Name of the binary property to send as body',
+		},
+		{
+		  displayName: 'Response Format',
+		  name: 'responseFormat',
+		  type: 'options',
+		  options: [
 			{
-				name: 'default',
-				httpMethod: '={{$parameter.webhookConfig.webhookMethod || "POST"}}', // Dynamic method
-				isFullPath: false,
-				path: 'webhook/:webhookId',
-				responseCode: '200',
-				// No need for webhookMethods here
+			  name: 'Automatically Detect',
+			  value: 'autodetect',
 			},
-		],
-		// Removed webhookMethods array from here
+			{
+			  name: 'String',
+			  value: 'string',
+			},
+			{
+			  name: 'JSON',
+			  value: 'json',
+			},
+			{
+			  name: 'Binary',
+			  value: 'file',
+			},
+		  ],
+		  default: 'autodetect',
+		  description: 'The format in which the data gets returned from the URL',
+		},
+		{
+		  displayName: 'Response Property',
+		  name: 'responsePropertyName',
+		  type: 'string',
+		  default: 'data',
+		  displayOptions: {
+			show: {
+			  responseFormat: ['file'],
+			},
+		  },
+		  description: 'Name of the binary property to which to write the response data',
+		},
+		{
+		  displayName: 'Options',
+		  name: 'options',
+		  type: 'collection',
+		  placeholder: 'Add Option',
+		  default: {},
+		  options: [
+			{
+			  displayName: 'Proxy',
+			  name: 'proxy',
+			  type: 'string',
+			  default: '',
+			  placeholder: 'http://myproxy:3128',
+			  description: 'HTTP proxy to use',
+			},
+			{
+			  displayName: 'Timeout',
+			  name: 'timeout',
+			  type: 'number',
+			  default: 10000,
+			  description: 'Time in ms to wait for the server to send response headers before aborting the request',
+			},
+			{
+			  displayName: 'Ignore SSL Issues',
+			  name: 'allowSelfSignedCertificate',
+			  type: 'boolean',
+			  default: false,
+			  description: 'Whether to ignore SSL certificates that are not authorized',
+			},
+			{
+			  displayName: 'Follow Redirect',
+			  name: 'followRedirect',
+			  type: 'boolean',
+			  default: true,
+			  description: 'Whether to follow XML-RPC redirects',
+			},
+			{
+			  displayName: 'Response Headers',
+			  name: 'returnFullResponse',
+			  type: 'boolean',
+			  default: false,
+			  description: 'Whether to return the full response data instead of only the body',
+			},
+			{
+			  displayName: 'Limit',
+			  name: 'limit',
+			  type: 'number',
+			  default: 0,
+			  description: 'Max number of items to return',
+			},
+		  ],
+		},
+	  ],
 	};
-
-	/**
-	 * Static helper to handle correlation data injection/extraction.
-	 */
-	static handleCorrelationData(
-		location: string | undefined,
-		paramName: string,
-		target: IHttpRequestOptions | IWebhookRequestObject,
-		valueToSet: string | undefined, // Only used when injecting
-		isWebhookRequest: boolean, // True if target is webhook req, false if HTTP req options
-		node: INode, // Node context for errors
-	): string | undefined {
-
-		try {
-			if (location === 'query') {
-				if (isWebhookRequest) {
-					return (target as IWebhookRequestObject).query?.[paramName] as string | undefined;
-				} else {
-					const options = target as IHttpRequestOptions;
-					options.qs = options.qs ?? {};
-					(options.qs as IDataObject)[paramName] = valueToSet;
-					return undefined; // Not extracting
-				}
-			} else if (location === 'header') {
-				if (isWebhookRequest) {
-					// Header names are case-insensitive, normalize lookup
-					const headers = (target as IWebhookRequestObject).headers ?? {};
-					const lowerParamName = paramName.toLowerCase();
-					const headerKey = Object.keys(headers).find(k => k.toLowerCase() === lowerParamName);
-					return headerKey ? headers[headerKey] as string : undefined;
-				} else {
-					const options = target as IHttpRequestOptions;
-					options.headers = options.headers ?? {};
-					(options.headers as IDataObject)[paramName] = valueToSet;
-					return undefined;
-				}
-			} else if (location === 'bodyJsonPath') {
-				const body = (target as any).body; // Use 'any' for flexibility
-				if (isWebhookRequest) {
-					if (typeof body === 'object' && body !== null) {
-						return objectPath.get(body, paramName) as string | undefined;
-					}
-					return undefined; // Body is not an object or path not found
-				} else { // Injecting into request body
-					let bodyData = (target as IHttpRequestOptions).body;
-					const contentType = (target as IHttpRequestOptions).headers?.['content-type'] as string | undefined;
-
-					// Ensure body is an object for JSON path injection
-					if (contentType?.includes('json')) {
-						if (typeof bodyData !== 'object' || bodyData === null) {
-							try {
-								// If bodyData is a stringified JSON, parse it
-								if (typeof bodyData === 'string' && bodyData.trim().startsWith('{')) {
-									bodyData = JSON.parse(bodyData);
-								} else {
-									bodyData = {}; // Start with empty object if not valid JSON
-								}
-							} catch {
-								bodyData = {}; // Start with empty object on parse error
-							}
-						}
-						// Now bodyData should be an object
-						objectPath.set(bodyData as object, paramName, valueToSet);
-						(target as IHttpRequestOptions).body = bodyData; // Assign potentially modified body back
-						(target as IHttpRequestOptions).json = true; // Ensure json flag is set
-					} else {
-						node.contextData.logger?.warn(`Cannot inject into body path '${paramName}'. Body Content-Type must be JSON.`);
-					}
-					return undefined;
-				}
-			} else if (location === 'none' && !isWebhookRequest) {
-				// Do nothing for 'none' when injecting
-				return undefined;
-			}
-		} catch (error: any) {
-			node.contextData.logger?.error(`Error handling correlation data at ${location} ('${paramName}'): ${error.message}`);
-			// Depending on context, might throw or return undefined
-			if (isWebhookRequest) return undefined; // Don't block webhook by throwing
-		}
-
-		// Default return if location invalid or error occurred during extraction
-		return undefined;
-	}
-
-
-	// --- Execute Method ---
+  
+  
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
-		const items = this.getInputData();
-		const returnData: INodeExecutionData[] = [];
-		const node = this.getNode();
-
-		// Retrieve static data for listeners at the beginning
-		const staticData = this.getWorkflowStaticData('node');
-		// Ensure listeners object exists in staticData (initialize if first run)
-		if (!staticData.listeners) {
-			staticData.listeners = {};
-		}
-		const webhookListeners = staticData.listeners as { [key: string]: IWebhookListener }; // Assert type
-
-		for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
-			try {
-				const url = this.getNodeParameter('url', itemIndex, '') as string;
-				const method = this.getNodeParameter('method', itemIndex, 'GET') as IHttpRequestMethods;
-				const authentication = this.getNodeParameter('authentication', itemIndex, 'none') as string;
-				const sendBody = this.getNodeParameter('sendBody', itemIndex, false) as boolean;
-				const contentType = this.getNodeParameter('contentType', itemIndex, 'json') as string;
-				const rawContentType = this.getNodeParameter('rawContentType', itemIndex, 'text/plain') as string;
-				const specifyBody = this.getNodeParameter('specifyBody', itemIndex, 'keypair') as string;
-				const sendMultipart = this.getNodeParameter('sendMultipart', itemIndex, false) as boolean;
-				const sendQuery = this.getNodeParameter('sendQuery', itemIndex, false) as boolean;
-				const sendHeaders = this.getNodeParameter('sendHeaders', itemIndex, false) as boolean;
-
-				const options = this.getNodeParameter('options', itemIndex, {}) as IDataObject;
-				const fullResponse = options.fullResponse as boolean ?? false;
-
-				const waitForWebhookResponse = this.getNodeParameter('waitForWebhookResponse', itemIndex, false) as boolean;
-				const webhookConfig = this.getNodeParameter('webhookConfig', itemIndex, {}) as IWebhookConfig;
-
-				// --- Base Request Options ---
-				const requestOptions: IHttpRequestOptions = {
-					method,
-					url: url, // Changed from uri to url
-					gzip: true,
-					rejectUnauthorized: !(options.allowUnauthorizedCerts as boolean ?? false), // Default rejectUnauthorized = true
-					timeout: options.timeout as number || 10000,
-					headers: {},
-					qs: {},
-					// Note: body, json, formData, proxy, responseType, encoding are set below or cast to any
-				};
-
-				// --- Proxy ---
-				if (options.proxy) {
-					(requestOptions as any).proxy = options.proxy as string; // Cast needed if type expects object
-				}
-
-				// --- Response Format & Encoding ---
-				const responseFormat = options.responseFormat as string || 'autodetect';
-				const responseCharacterEncoding = options.responseCharacterEncoding as string || 'autodetect';
-
-				const reqOptsAny = requestOptions as any;
-				if (responseFormat === 'json') reqOptsAny.responseType = 'json';
-				else if (responseFormat === 'text') reqOptsAny.responseType = 'text';
-				else reqOptsAny.responseType = 'arraybuffer';
-
-				if (reqOptsAny.responseType === 'text' && responseCharacterEncoding !== 'autodetect') {
-					reqOptsAny.encoding = responseCharacterEncoding as BufferEncoding;
-				} else {
-                    reqOptsAny.encoding = null; // Let request lib handle buffer decoding
-                }
-
-				// --- Headers ---
-				if (sendHeaders) {
-					const headerValues = this.getNodeParameter('headerParameters.values', itemIndex, []) as Array<{ name?: string, value?: string }>;
-					requestOptions.headers = headerValues.reduce((acc, param) => {
-						if (param.name) acc[param.name] = param.value ?? '';
-						return acc;
-					}, requestOptions.headers as IDataObject);
-				}
-
-				// --- Query Parameters ---
-				if (sendQuery) {
-					const queryValues = this.getNodeParameter('queryParameters.values', itemIndex, []) as Array<{ name?: string, value?: string }>;
-					requestOptions.qs = queryValues.reduce((acc, param) => {
-						if (param.name) acc[param.name] = param.value ?? '';
-						return acc;
-					}, requestOptions.qs as IDataObject);
-				}
-
-				// --- Body ---
-				let bodyData: any = undefined;
-				if (sendBody && ['POST', 'PATCH', 'PUT'].includes(method)) {
-					requestOptions.headers = requestOptions.headers ?? {};
-
-					if (contentType === 'json') {
-						(requestOptions.headers as IDataObject)['content-type'] = 'application/json; charset=utf-8';
-						if (specifyBody === 'keypair') {
-							const bodyParams = this.getNodeParameter('bodyParameters.values', itemIndex, []) as Array<{ name?: string, value?: any }>;
-							bodyData = bodyParams.reduce((acc, param) => { if (param.name) acc[param.name] = param.value; return acc; }, {} as IDataObject);
-						} else if (specifyBody === 'json') {
-							const jsonBodyStr = this.getNodeParameter('jsonBody', itemIndex, '{}') as string;
-							try { bodyData = JSON.parse(jsonBodyStr); }
-							catch (e: any) { throw new NodeOperationError(node, `Invalid JSON in body: ${e.message}`, { itemIndex }); }
-						}
-						requestOptions.json = true;
-						requestOptions.body = bodyData;
-
-					} else if (contentType === 'form-urlencoded') {
-						(requestOptions.headers as IDataObject)['content-type'] = 'application/x-www-form-urlencoded; charset=utf-8';
-						if (specifyBody === 'keypair') {
-							const bodyParams = this.getNodeParameter('bodyParameters.values', itemIndex, []) as Array<{ name?: string, value?: string }>;
-							const params = new URLSearchParams();
-							bodyParams.forEach(param => { if (param.name) params.append(param.name, param.value ?? ''); });
-							bodyData = params.toString();
-							requestOptions.body = bodyData;
-							requestOptions.json = false;
-						} else {
-							throw new NodeOperationError(node, 'For form-urlencoded, use "Using Fields Below".', { itemIndex });
-						}
-
-					} else if (contentType === 'multipart-form-data') {
-						if (sendMultipart) {
-							const multipartParams = this.getNodeParameter('multipartParameters.values', itemIndex, []) as Array<{ name?: string, value?: any, type?: string, contentType?: string, filename?: string }>;
-							const formData: IDataObject = {};
-							for (const part of multipartParams) {
-								if (!part.name) continue;
-								let value = part.value;
-								if (part.type === 'binary') {
-									// Use 'any' cast for helper due to TS2684
-									const binaryData = await (this.helpers as any).assertBinaryData(itemIndex, value);
-									const partOptions: { contentType?: string, filename?: string } = {};
-									if (part.contentType) partOptions.contentType = part.contentType;
-									const filename = part.filename || binaryData.fileName;
-									if (filename) partOptions.filename = filename;
-									if (binaryData.mimeType && !partOptions.contentType) partOptions.contentType = binaryData.mimeType;
-									value = { value: Buffer.from(binaryData.data, 'base64'), options: partOptions };
-								}
-								formData[part.name] = value;
-							}
-							(requestOptions as any).formData = formData; // Cast needed if type missing formData
-							delete (requestOptions.headers as IDataObject)['content-type'];
-							requestOptions.json = false;
-						} else {
-							throw new NodeOperationError(node, 'For multipart/form-data, enable "Send Form-Data".', { itemIndex });
-						}
-
-					} else if (contentType === 'raw') {
-						(requestOptions.headers as IDataObject)['content-type'] = rawContentType;
-						bodyData = this.getNodeParameter('rawBody', itemIndex, '') as string;
-						requestOptions.body = bodyData;
-						requestOptions.json = false;
-
-					} else if (contentType === 'none') {
-						delete (requestOptions.headers as IDataObject)['content-type'];
-					}
-				} // End of sendBody block
-
-
-				// --- Webhook Wait Logic ---
-				if (waitForWebhookResponse) {
-					const correlationIdValue = uuidv4();
-					const webhookUniqueId = `${this.getExecutionId()}-${node.id}-${itemIndex}-${uuidv4().substring(0, 8)}`;
-
-					const {
-						webhookMethod = 'POST',
-						correlationIdLocationInRequest = 'none',
-						correlationIdParameterName = 'correlationId',
-						callbackUrlParameterNameInRequest = 'callbackUrl',
-						callbackUrlLocationInRequest = 'bodyJsonPath',
-						timeoutWebhook = 120,
-					} = webhookConfig;
-
-					// 1. Get Webhook URL using webhookFunctions (TS2339 fix)
-					const webhookUrl = this.webhookFunctions.getWebhookUrl('default');
-                    if (!webhookUrl) {
-                         throw new NodeOperationError(node, 'Could not generate webhook URL. Is Instance Base URL configured?', { itemIndex });
-                    }
-                    const finalWebhookUrl = webhookUrl.replace(':webhookId', webhookUniqueId);
-
-					// 2. Inject Correlation ID
-					AsyncHttpRequest.handleCorrelationData(
-						correlationIdLocationInRequest,
-						correlationIdParameterName as string,
-						requestOptions,
-						correlationIdValue,
-						false,
-						node,
-					);
-
-					// 3. Inject Callback URL
-					AsyncHttpRequest.handleCorrelationData(
-						callbackUrlLocationInRequest,
-						callbackUrlParameterNameInRequest as string,
-						requestOptions,
-						finalWebhookUrl,
-						false,
-						node,
-					);
-
-					// 4. Setup Waiter Promise & Listener
-					const waitPromise = new Promise<IDataObject>((resolve, reject) => {
-						const timeoutSeconds = (timeoutWebhook as number) * 1000;
-						const timer = setTimeout(() => {
-							const listener = webhookListeners[webhookUniqueId];
-							if (listener) {
-								const listenerItemIndex = listener.itemIndex;
-								delete webhookListeners[webhookUniqueId];
-								this.logger.warn(`Webhook ${webhookUniqueId} timed out after ${timeoutWebhook} seconds.`);
-								reject(new NodeOperationError(node, `Webhook wait timed out for ID ${webhookUniqueId}`, { itemIndex: listenerItemIndex }));
-							} else {
-								this.logger.warn(`Timeout triggered for ${webhookUniqueId}, listener already removed.`);
-							}
-						}, timeoutSeconds);
-
-						webhookListeners[webhookUniqueId] = {
-							resolve: resolve,
-							reject: reject,
-							timeoutTimer: timer,
-							expectedMethod: (webhookMethod as string).toUpperCase(),
-							correlationId: correlationIdValue,
-							webhookConfig: webhookConfig,
-							itemIndex: itemIndex,
-						};
-						this.logger.debug(`Webhook Listener Added: ${webhookUniqueId} (Corr: ${correlationIdValue})`);
-					});
-
-					// 5. Send Initial Request (use 'any' cast for helper due to TS2684)
-					try {
-						this.logger.debug(`Sending initial request [${itemIndex}] for ${webhookUniqueId}`);
-						const initialResponse = await (this.helpers as any).requestWithAuthentication(
-							authentication,
-							requestOptions,
-							itemIndex,
-						);
-						this.logger.debug(`Initial request [${itemIndex}] sent for ${webhookUniqueId}. Status: ${initialResponse?.statusCode}. Waiting...`);
-					} catch (error: any) {
-						const listenerData = webhookListeners[webhookUniqueId];
-						if (listenerData) {
-							clearTimeout(listenerData.timeoutTimer);
-							delete webhookListeners[webhookUniqueId];
-							this.logger.debug(`Webhook Listener Removed (initial req error): ${webhookUniqueId}`);
-						}
-						if (!options.ignoreResponseCode || !isNodeApiError(error)) {
-							throw error;
-						} else {
-							this.logger.warn(`Initial request [${itemIndex}] failed but ignoring. Error: ${error.message}. Status: ${error.context?.statusCode}. Waiting for webhook ${webhookUniqueId}.`);
-						}
-					}
-
-					// 6. Wait for Webhook Promise
-					this.logger.debug(`Waiting for webhook ${webhookUniqueId}...`);
-					const webhookResult = await waitPromise;
-
-					// 7. Add webhook result to output
-					returnData.push({ json: webhookResult, pairedItem: { item: itemIndex } });
-
-				} else {
-					// --- Standard HTTP Request (No Webhook Wait) ---
-					let response: NodeExecutionWithMetadata;
-					try {
-						// Use 'any' cast for helper due to TS2684
-						response = await (this.helpers as any).requestWithAuthentication(
-							authentication,
-							requestOptions,
-							itemIndex,
-						);
-
-						let responseData: any; // Final data
-						let binaryPropertyName: string | undefined = undefined;
-
-						const responseBody = response.body;
-						const isBuffer = Buffer.isBuffer(responseBody);
-						const headers = response.headers as IDataObject | undefined;
-						const contentTypeHeader = headers?.['content-type']; // Reuse this
-
-						if (!fullResponse) {
-							if (responseFormat === 'file') {
-								if (!isBuffer) throw new NodeOperationError(node, 'Response body not binary, cannot format as file.', { itemIndex });
-								// Safer split (TS2339 fix)
-								const mimeType = typeof contentTypeHeader === 'string' ? contentTypeHeader.split(';')[0] : 'application/octet-stream';
-								// Use 'any' cast for helper due to TS2684
-								const binaryData = await (this.helpers as any).prepareBinaryData(responseBody, undefined, mimeType);
-								binaryPropertyName = 'data';
-								returnData.push({ json: {}, binary: { [binaryPropertyName]: binaryData }, pairedItem: { item: itemIndex } });
-								continue;
-
-							} else if (responseFormat === 'text') {
-								const encoding = reqOptsAny.encoding as BufferEncoding | undefined;
-								responseData = isBuffer ? responseBody.toString(encoding) : String(responseBody);
-							} else if (responseFormat === 'json') {
-								if (typeof responseBody === 'object' && !isBuffer) {
-									responseData = responseBody;
-								} else {
-									const encoding = reqOptsAny.encoding as BufferEncoding | undefined ?? 'utf8';
-									const textBody = isBuffer ? responseBody.toString(encoding) : String(responseBody);
-									try { responseData = JSON.parse(textBody); }
-									catch (e: any) { throw new NodeOperationError(node, `Response body not valid JSON: ${e.message}`, { itemIndex }); }
-								}
-							} else { // Autodetect
-								if (typeof responseBody === 'object' && !isBuffer) {
-									responseData = responseBody;
-								} else {
-									const encoding = reqOptsAny.encoding as BufferEncoding | undefined ?? 'utf8';
-									responseData = isBuffer ? responseBody.toString(encoding) : String(responseBody);
-									// Safer includes check (TS2339 fix)
-                                    if (typeof contentTypeHeader === 'string' && contentTypeHeader.includes('json') && typeof responseData === 'string') {
-                                        try { responseData = JSON.parse(responseData); } catch(e) { /* Ignore */ }
-                                    }
-								}
-							}
-						} else { // Full Response
-							let processedBody: any = responseBody; // Declare as any (TS2322 fix)
-							if (isBuffer) {
-                                const bufferInfo = `Buffer data (length: ${responseBody.length}, type: ${contentTypeHeader || 'unknown'})`;
-								processedBody = bufferInfo;
-							}
-							responseData = {
-								headers: response.headers,
-								statusCode: response.statusCode,
-								statusMessage: response.statusMessage,
-								body: processedBody,
-							};
-						}
-
-						if (binaryPropertyName === undefined) {
-							returnData.push({ json: responseData, pairedItem: { item: itemIndex } });
-						}
-
-					} catch (error: any) {
-						if (!options.ignoreResponseCode || !isNodeApiError(error)) {
-							throw error;
-						}
-
-						// Safer error handling (TS2533, TS2339 fixes)
-						const errorContext = isNodeApiError(error) ? error.context : {}; // Get context only if it's a NodeApiError
-						const errorOutput: IDataObject = {
-							error: {
-								message: error.message,
-								httpCode: errorContext?.statusCode,
-								httpMessage: errorContext?.statusMessage,
-								headers: errorContext?.headers,
-								body: errorContext?.body,
-							},
-						};
-						// Add stack safely if error is an Error instance
-						if (error instanceof Error && error.stack) {
-							(errorOutput.error as IDataObject).stack = error.stack.split('\n').map((l: string) => l.trim());
-						}
-
-						returnData.push({ json: errorOutput, pairedItem: { item: itemIndex } });
-					}
-				} // End of standard request block
-
-			} catch (error: any) {
-				if (this.continueOnFail()) {
-					const errorJson: IDataObject = { error: { message: error.message } };
-                    // Add stack safely
-                    if (error instanceof Error && error.stack) {
-                        errorJson.error.stack = error.stack.split('\n').map((l: string) => l.trim());
-                    }
-                    // Add context safely
-                    if (error instanceof NodeOperationError && error.context) {
-                        errorJson.error.context = error.context;
-                    } else if (isNodeApiError(error) && error.context) {
-                        errorJson.error.context = error.context;
-                    }
-
-					returnData.push({ json: errorJson, pairedItem: { item: itemIndex } });
-					continue;
-				}
-				throw error;
-			}
-		} // End of item loop
-
-		return [returnData];
-	}
-
-
-	// --- Webhook Method ---
-	static async webhook(this: IWebhookFunctions): Promise<IWebhookResponseData> {
-		const req = this.getRequestObject() as IWebhookRequestObject;
-		const node = this.getNode();
-		const webhookUniqueId = req.params?.webhookId as string | undefined;
-
-		if (!webhookUniqueId) {
-			this.logger.warn(`Webhook received without 'webhookId'.`);
-			throw new NodeOperationError(node, 'Missing webhook identifier.');
-		}
-
-		this.logger.debug(`Webhook received for ID: ${webhookUniqueId}`);
-
-		const staticData = this.getWorkflowStaticData('node');
-		const webhookListeners = staticData.listeners as { [key: string]: IWebhookListener } || {};
-		const listenerData = webhookListeners[webhookUniqueId];
-
-		if (!listenerData) {
-			this.logger.warn(`Webhook ignored (unknown/timed-out ID): ${webhookUniqueId}.`);
-            throw new NodeOperationError(node, `Webhook listener not found or timed out: ${webhookUniqueId}`);
-		}
-
-		const { resolve, reject, timeoutTimer, expectedMethod, correlationId, webhookConfig, itemIndex } = listenerData;
-		const receivedMethod = (req.method ?? '').toUpperCase();
-
-		if (receivedMethod !== expectedMethod) {
-			this.logger.warn(`Webhook ${webhookUniqueId}: Method mismatch (${receivedMethod} vs ${expectedMethod}). Ignoring.`);
-            throw new NodeOperationError(node, `Incorrect method ${receivedMethod} for webhook ${webhookUniqueId}. Expected ${expectedMethod}.`, { itemIndex });
-		}
-
+	  const items = this.getInputData();
+	  const returnItems: INodeExecutionData[] = [];
+	  
+	  let requestOptions: OptionsWithUri;
+	  
+	  const waitForWebhook = this.getNodeParameter('waitForWebhook', 0, false) as boolean;
+	  
+	  for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
 		try {
-			const receivedCorrelationId = AsyncHttpRequest.handleCorrelationData(
-				webhookConfig.correlationIdLocationInWebhook,
-				webhookConfig.correlationIdParameterNameInWebhook as string,
-				req,
-				undefined,
-				true,
-				node,
-			) as string | undefined;
-
-			this.logger.debug(`Webhook ${webhookUniqueId}: Expecting Corr ID: ${correlationId}, Received: ${receivedCorrelationId}`);
-
-			if (receivedCorrelationId === correlationId) {
-				clearTimeout(timeoutTimer);
-				delete webhookListeners[webhookUniqueId];
-				this.logger.info(`Webhook ${webhookUniqueId}: Correlation ID match! Resolving.`);
-
-				const webhookResult: IDataObject = {};
-				const includes = Array.isArray(webhookConfig.webhookResponseIncludes) ? webhookConfig.webhookResponseIncludes : ['body'];
-
-				// Use 'any' cast for req.body (TS2322 fix)
-				if (includes.includes('body')) webhookResult.body = req.body as any;
-				if (includes.includes('headers')) webhookResult.headers = req.headers;
-				if (includes.includes('query')) webhookResult.query = req.query;
-
-				resolve(webhookResult);
-				return { noWebhookResponse: false };
-
-			} else {
-				this.logger.warn(`Webhook ${webhookUniqueId}: Correlation ID mismatch (${receivedCorrelationId} vs ${correlationId}). Ignoring.`);
-                throw new NodeOperationError(node, `Correlation ID mismatch for webhook ${webhookUniqueId}.`, { itemIndex });
+		  // Get connection information
+		  const method = this.getNodeParameter('method', itemIndex, 'GET') as string;
+		  const url = this.getNodeParameter('url', itemIndex, '') as string;
+		  
+		  // Generate a request ID for correlation if waiting for webhook
+		  let correlationId = '';
+		  if (waitForWebhook) {
+			const correlationSource = this.getNodeParameter('webhookCorrelationValueFrom', itemIndex, 'random') as string;
+			
+			if (correlationSource === 'random') {
+			  correlationId = crypto.randomUUID();
+			} else if (correlationSource === 'custom') {
+			  correlationId = this.getNodeParameter('correlationValue', itemIndex, '') as string;
 			}
-		} catch (error: any) {
-			this.logger.error(`Webhook ${webhookUniqueId}: Error processing: ${error.message}`, { error: error.stack });
-
-            if (webhookListeners[webhookUniqueId]) { // Check existence before cleanup
-			    clearTimeout(timeoutTimer);
-			    delete webhookListeners[webhookUniqueId];
-                 if (!(error instanceof NodeOperationError && error.message.includes('Correlation ID mismatch'))) {
-                    reject(new NodeOperationError(node, `Error processing webhook ${webhookUniqueId}: ${error.message}`, { itemIndex }));
-                 }
-            }
-			throw error; // Re-throw to signal error response
+			// For responseField, we'll set it after the initial request
+		  }
+		  
+		  // Build request options based on node parameters
+		  requestOptions = this.prepareRequestOptions(method, url, itemIndex);
+		  
+		  // Apply correlation ID to the request if needed
+		  if (waitForWebhook && correlationId) {
+			// Determine where to add the correlation ID (headers, query, body)
+			if (method === 'GET' || method === 'HEAD') {
+			  // Add to query parameters for GET/HEAD
+			  if (!requestOptions.qs) requestOptions.qs = {};
+			  requestOptions.qs.requestId = correlationId;
+			} else {
+			  // Add to body for other methods if JSON
+			  if (requestOptions.body && typeof requestOptions.body === 'object') {
+				(requestOptions.body as any).requestId = correlationId;
+			  } 
+			  // Also add to headers as fallback
+			  if (!requestOptions.headers) requestOptions.headers = {};
+			  requestOptions.headers['X-Request-ID'] = correlationId;
+			}
+		  }
+		  
+		  // Make the HTTP request
+		  let responseData;
+		  
+		  try {
+			responseData = await this.helpers.request(requestOptions);
+		  } catch (error) {
+			throw new NodeOperationError(this.getNode(), `HTTP request failed: ${error.message}`, { itemIndex });
+		  }
+		  
+		  // If response comes back as a string, try to parse it as JSON
+		  if (typeof responseData === 'string') {
+			try {
+			  responseData = JSON.parse(responseData);
+			} catch (e) {
+			  // If it's not valid JSON, keep it as a string
+			}
+		  }
+		  
+		  // If we're not waiting for a webhook, return the response right away
+		  if (!waitForWebhook) {
+			returnItems.push({
+			  json: responseData,
+			  pairedItem: { item: itemIndex },
+			});
+			continue;
+		  }
+		  
+		  // For webhook responses, we need to set up a waiting mechanism
+		  const webhookTimeout = this.getNodeParameter('webhookTimeout', itemIndex, 300) as number;
+		  const webhookCorrelationField = this.getNodeParameter('webhookCorrelationField', itemIndex, 'requestId') as string;
+		  
+		  // If correlation is from response field, extract it
+		  if (correlationId === '' && this.getNodeParameter('webhookCorrelationValueFrom', itemIndex, 'random') === 'responseField') {
+			const responseField = this.getNodeParameter('responseField', itemIndex, 'id') as string;
+			if (responseData && typeof responseData === 'object' && responseField in responseData) {
+			  correlationId = responseData[responseField].toString();
+			} else {
+			  throw new NodeOperationError(
+				this.getNode(),
+				`Could not find correlation field "${responseField}" in the response`,
+				{ itemIndex }
+			  );
+			}
+		  }
+		  
+		  // Now wait for the webhook with matching correlation ID
+		  const webhookData = await this.waitForWebhookResponse(correlationId, webhookCorrelationField, webhookTimeout);
+		  
+		  if (webhookData === null) {
+			throw new NodeOperationError(
+			  this.getNode(),
+			  `Webhook response timeout after ${webhookTimeout} seconds`,
+			  { itemIndex }
+			);
+		  }
+		  
+		  // Return the webhook data instead of the original response
+		  returnItems.push({
+			json: {
+			  initialResponse: responseData,
+			  webhookResponse: webhookData,
+			},
+			pairedItem: { item: itemIndex },
+		  });
+		} catch (error) {
+		  if (this.continueOnFail()) {
+			returnItems.push({
+			  json: {
+				error: error.message,
+			  },
+			  pairedItem: { item: itemIndex },
+			});
+			continue;
+		  }
+		  throw error;
 		}
+	  }
+	  
+	  return [returnItems];
 	}
-}
+	
+	/**
+	 * Prepare the request options based on node parameters
+	 */
+	private prepareRequestOptions(method: string, url: string, itemIndex: number): OptionsWithUri {
+	  const options: OptionsWithUri = {
+		method,
+		uri: url,
+		json: true,
+		gzip: true,
+	  };
+	  
+	  // Authentication
+	  const authentication = this.getNodeParameter('authentication', itemIndex, 'none') as string;
+	  
+	  if (authentication === 'basicAuth') {
+		const credentials = this.getCredentials('httpBasicAuth') as ICredentialDataDecryptedObject;
+		options.auth = {
+		  user: credentials.user as string,
+		  pass: credentials.password as string,
+		};
+	  } else if (authentication === 'headerAuth') {
+		const credentials = this.getCredentials('httpHeaderAuth') as ICredentialDataDecryptedObject;
+		options.headers = {
+		  [credentials.name as string]: credentials.value as string,
+		};
+	  } else if (authentication === 'oAuth1') {
+		const credentials = this.getCredentials('oAuth1Api') as ICredentialDataDecryptedObject;
+		const oauth = {
+		  consumer_key: credentials.consumerKey as string,
+		  consumer_secret: credentials.consumerSecret as string,
+		  token: credentials.accessToken as string,
+		  token_secret: credentials.accessSecret as string,
+		};
+		options.oauth = oauth;
+	  } else if (authentication === 'oAuth2') {
+		const credentials = this.getCredentials('oAuth2Api') as ICredentialDataDecryptedObject;
+		options.headers = {
+		  Authorization: `Bearer ${credentials.accessToken}`,
+		};
+	  }
+	  
+	  // Headers
+	  const sendHeaders = this.getNodeParameter('sendHeaders', itemIndex, false) as boolean;
+	  if (sendHeaders) {
+		const headerParameters = this.getNodeParameter('headerParameters', itemIndex, {}) as {
+		  parameter: { [key: string]: string };
+		};
+		
+		if (!options.headers) options.headers = {};
+		
+		for (const key of Object.keys(headerParameters.parameter || {})) {
+		  options.headers[key] = headerParameters.parameter[key];
+		}
+	  }
+	  
+	  // Query Parameters
+	  const queryParameters = this.getNodeParameter('queryParameters', itemIndex, {}) as {
+		parameter: { [key: string]: string };
+	  };
+	  
+	  if (Object.keys(queryParameters.parameter || {}).length) {
+		options.qs = {};
+		
+		for (const key of Object.keys(queryParameters.parameter || {})) {
+		  options.qs[key] = queryParameters.parameter[key];
+		}
+	  }
+	  
+	  // Body Parameters
+	  if (['PATCH', 'POST', 'PUT'].includes(method)) {
+		const bodyContentType = this.getNodeParameter('bodyContentType', itemIndex, 'json') as string;
+		
+		if (bodyContentType === 'json') {
+		  const bodyParameters = this.getNodeParameter('bodyParameters', itemIndex, {}) as {
+			parameter: { [key: string]: string };
+		  };
+		  
+		  options.body = {};
+		  
+		  for (const key of Object.keys(bodyParameters.parameter || {})) {
+			options.body[key] = bodyParameters.parameter[key];
+		  }
+		} else if (bodyContentType === 'multipart-form-data') {
+		  const bodyParameters = this.getNodeParameter('bodyParameters', itemIndex, {}) as {
+			parameter: { [key: string]: string };
+		  };
+		  
+		  const formData = {};
+		  
+		  for (const key of Object.keys(bodyParameters.parameter || {})) {
+			formData[key] = bodyParameters.parameter[key];
+		  }
+		  
+		  options.formData = formData;
+		} else if (bodyContentType === 'form-urlencoded') {
+		  const bodyParameters = this.getNodeParameter('bodyParameters', itemIndex, {}) as {
+			parameter: { [key: string]: string };
+		  };
+		  
+		  const form = {};
+		  
+		  for (const key of Object.keys(bodyParameters.parameter || {})) {
+			form[key] = bodyParameters.parameter[key];
+		  }
+		  
+		  options.form = form;
+		} else if (bodyContentType === 'raw') {
+		  options.body = this.getNodeParameter('rawBody', itemIndex, '') as string;
+		} else if (bodyContentType === 'binaryData') {
+		  const binaryPropertyName = this.getNodeParameter('binaryPropertyName', itemIndex, 'data') as string;
+		  const binaryData = this.helpers.getBinaryDataBuffer(itemIndex, binaryPropertyName);
+		  
+		  options.body = binaryData;
+		}
+	  }
+	  
+	  // Response Format
+	  const responseFormat = this.getNodeParameter('responseFormat', itemIndex, 'autodetect') as string;
+	  
+	  if (responseFormat === 'file') {
+		options.encoding = null;
+		options.json = false;
+	  } else if (responseFormat === 'string') {
+		options.json = false;
+	  }
+	  
+	  // Additional Options
+	  const additionalOptions = this.getNodeParameter('options', itemIndex, {}) as {
+		allowSelfSignedCertificate?: boolean;
+		followRedirect?: boolean;
+		proxy?: string;
+		timeout?: number;
+	  };
+	  
+	  if (additionalOptions.allowSelfSignedCertificate) {
+		options.rejectUnauthorized = false;
+	  }
+	  
+	  if (additionalOptions.followRedirect !== undefined) {
+		options.followRedirect = additionalOptions.followRedirect;
+	  }
+	  
+	  if (additionalOptions.proxy) {
+		options.proxy = additionalOptions.proxy;
+	  }
+	  
+	  if (additionalOptions.timeout) {
+		options.timeout = additionalOptions.timeout;
+	  }
+	  
+	  return options;
+	}
+	
+	/**
+	 * Wait for a webhook response with matching correlation ID
+	 */
+	private async waitForWebhookResponse(
+	  correlationId: string,
+	  correlationField: string,
+	  timeoutSeconds: number
+	): Promise<any> {
+	  // This would be implemented with the n8n SDK to listen for webhook events
+	  // This is a simplified placeholder implementation
+	  
+	  // Maintain a map of pending webhook requests by correlation ID
+	  if (!this.pendingWebhooks) {
+		this.pendingWebhooks = new Map<string, { resolve: Function; reject: Function; timeout: NodeJS.Timeout }>();
+	  }
+	  
+	  return new Promise<any>((resolve, reject) => {
+		// Set a timeout to reject the promise if webhook doesn't arrive
+		const timeout = setTimeout(() => {
+		  this.pendingWebhooks.delete(correlationId);
+		  resolve(null); // Return null on timeout instead of rejecting
+		}, timeoutSeconds * 1000);
+		
+		// Store the promise handlers and timeout
+		this.pendingWebhooks.set(correlationId, { resolve, reject, timeout });
+		
+		// In a real implementation, n8n would register a webhook listener
+		// When a webhook is received, it would check if correlationId matches
+		// and resolve the corresponding promise
+		
+		// For testing, you'd need to call the handleWebhook method manually
+		// or implement a test webhook server
+	  });
+	}
+	
+	/**
+	 * Handle an incoming webhook
+	 * This method would be called by the n8n webhook handler
+	 */
+	public handleWebhook(webhookData: any, correlationField: string): boolean {
+	  if (!this.pendingWebhooks || !webhookData || typeof webhookData !== 'object') {
+		return false;
+	  }
+	  
+	  const correlationId = webhookData[correlationField];
+	  
+	  if (!correlationId || !this.pendingWebhooks.has(correlationId)) {
+		return false;
+	  }
+	  
+	  const { resolve, timeout } = this.pendingWebhooks.get(correlationId);
+	  
+	  // Clear the timeout and resolve the promise with the webhook data
+	  clearTimeout(timeout);
+	  resolve(webhookData);
+	  this.pendingWebhooks.delete(correlationId);
+	  
+	  return true;
+	}
+  }
+  
