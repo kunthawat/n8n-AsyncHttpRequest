@@ -9,19 +9,14 @@ import {
 	IDataObject,
 	NodeApiError,
 	IWebhookFunctions,
-	NodeConnectionType, // Keep if specifically used, otherwise remove
-	INodeInputConfiguration, // Keep if specifically used, otherwise remove
-	INodeOutputConfiguration, // Keep if specifically used, otherwise remove
-	IAllExecuteFunctions, // Useful for precise helper 'this' types
-	BaseHelperFunctions, // Base types for helpers
 	BinaryHelperFunctions, // Types for binary helpers
 	RequestHelperFunctions, // Types for request helpers
 	NodeExecutionWithMetadata, // Type for getWorkflowStaticData
-	Workflow, // Type for getWorkflowStaticData context
 	INode, // Base node interface
-	NodeParameterValue, // Type for parameter values
-	continueOnFail, // Explicit import if needed elsewhere
 	IWebhookResponseData, // Type for webhook response if needed
+	IBinaryKeyData, // For binary data output
+	IPairedItemData, // For pairing items
+	GenericValue, // Generic type for JSON data
 } from 'n8n-workflow';
 
 import { v4 as uuidv4 } from 'uuid';
@@ -65,6 +60,11 @@ function isNodeApiError(error: any): error is NodeApiError {
 	return error instanceof NodeApiError && typeof error.context === 'object';
 }
 
+// Store active listeners associated with a unique ID (ExecutionID-NodeID-ItemIndex-random)
+// Needs to be static or managed outside the class instance if multiple executions happen concurrently.
+// Using getWorkflowStaticData is the recommended n8n way.
+// let webhookListeners: { [key: string]: IWebhookListener } = {}; // Replaced by getWorkflowStaticData
+
 // --- Node Class ---
 
 export class AsyncHttpRequest implements INodeType {
@@ -78,8 +78,8 @@ export class AsyncHttpRequest implements INodeType {
 		defaults: {
 			name: 'Async HTTP Request',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		// inputs: ['main'], // Removed to default to main
+		// outputs: ['main'], // Removed to default to main
 		credentials: [
 			{
 				name: 'httpBasicAuth',
@@ -386,6 +386,7 @@ export class AsyncHttpRequest implements INodeType {
 				isFullPath: false,
 				path: 'webhook/:webhookId', // Path to capture unique ID
 				responseCode: '200', // Default success code
+				// webhookMethods are defined at the root level now
 			},
 		],
 		webhookMethods: ['POST', 'GET', 'PUT'], // Explicitly list possible methods
@@ -400,90 +401,95 @@ export class AsyncHttpRequest implements INodeType {
 	 * @param valueToSet Value to inject (string), or undefined if extracting
 	 * @param isWebhookRequest True if extracting from webhook, false if injecting into request
 	 * @param node The INode instance for context
-	 * @returns Extracted value (string | undefined) or undefined if injecting/error
+	 * @returns The extracted value (string | undefined) if extracting, or void if injecting.
+	 * @throws NodeOperationError if JSON path setting/getting fails or location is invalid.
 	 */
 	static handleCorrelationData(
 		location: 'query' | 'header' | 'bodyJsonPath' | 'none' | undefined,
 		paramName: string,
 		data: IHttpRequestOptions | IWebhookRequestObject,
-		valueToSet: string | undefined,
-		isWebhookRequest: boolean,
-		node: INode,
-	): string | undefined {
-		try {
-			if (location === 'none' && !isWebhookRequest) {
-				return undefined; // Nothing to inject
-			}
-			if (!location || !paramName) {
-				if (isWebhookRequest && location !== 'none') { // Required for extraction unless 'none' explicitly chosen for injection
-				   throw new NodeOperationError(node, `Missing location ('${location}') or parameter name ('${paramName}') for correlation data.`);
-				}
-				return undefined; // Or not configured for injection
-			}
-
-			if (isWebhookRequest) {
-				// Extracting from webhook request object
-				const req = data as IWebhookRequestObject;
-				if (location === 'query') {
-					return req.query?.[paramName] as string | undefined;
-				} else if (location === 'header') {
-					const headerValue = req.headers?.[paramName.toLowerCase()]; // Headers are often lowercased
-					return Array.isArray(headerValue) ? headerValue[0] : headerValue as string | undefined;
-				} else if (location === 'bodyJsonPath') {
-					if (typeof req.body !== 'object' || req.body === null) {
-						node.Logger.warn(`Cannot extract correlation ID from body: body is not a parsable object.`);
-						return undefined;
-					}
-					return objectPath.get(req.body, paramName) as string | undefined;
-				}
-			} else {
-				// Injecting into request options object
-				const opts = data as IHttpRequestOptions;
-				if (location === 'query') {
-					opts.qs = opts.qs ?? {};
-					opts.qs[paramName] = valueToSet;
-				} else if (location === 'header') {
-					opts.headers = opts.headers ?? {};
-					opts.headers[paramName] = valueToSet;
-				} else if (location === 'bodyJsonPath') {
-					// Requires body to be JSON object. Needs careful handling.
-					// Ensure body exists and is an object before attempting to set path.
-					if (typeof opts.body !== 'object' || opts.body === null) {
-						// Try parsing if it's a string? Or assume it was prepared as an object?
-						// For simplicity, assume opts.body is already the object or needs to be.
-						// This might need adjustment based on how body is prepared earlier.
-						// If contentType is JSON and specifyBody is keypair, body is built later.
-						// If specifyBody is JSON, opts.body is parsed JSON.
-						// This logic might need refinement based on the exact state of opts.body
-						// when this function is called. Let's assume for now it should be an object.
-						if (opts.json && typeof opts.body === 'object' && opts.body !== null) {
-							 objectPath.set(opts.body, paramName, valueToSet);
-						} else {
-							 node.Logger.warn(`Cannot set correlation data in body path '${paramName}': Request body is not setup as a modifiable JSON object at this stage.`);
-							 // Consider throwing an error if this is critical
-							 // throw new NodeOperationError(node, `Cannot set data in body path '${paramName}': Request body must be JSON object.`);
-						}
-					} else {
-						objectPath.set(opts.body, paramName, valueToSet);
-					}
-				}
-			}
-		} catch (error: any) {
-			throw new NodeOperationError(node, `Error handling correlation data (${isWebhookRequest ? 'extract' : 'inject'}) at ${location} ('${paramName}'): ${error.message}`);
+		valueToSet?: string,
+		isWebhookRequest: boolean = false,
+		node?: INode, // Added node for error context
+	): string | undefined | void {
+		if (location === 'none') {
+			return isWebhookRequest ? undefined : void 0;
 		}
-		return undefined; // Return undefined when injecting
+
+		if (!location || !paramName) {
+			throw new NodeOperationError(node ?? {} as INode, `Invalid configuration: Location ('${location}') or Parameter Name ('${paramName}') missing for correlation/callback data.`);
+		}
+
+		if (isWebhookRequest) {
+			// --- Extraction from Webhook Request ---
+			const req = data as IWebhookRequestObject;
+			if (location === 'query') {
+				return req.query?.[paramName] as string | undefined;
+			} else if (location === 'header') {
+				const headerValue = req.headers?.[paramName.toLowerCase()]; // Headers often lowercased
+				return Array.isArray(headerValue) ? headerValue[0] : headerValue as string | undefined;
+			} else if (location === 'bodyJsonPath') {
+				try {
+					// Ensure body is parsed if JSON string
+                    let body = req.body;
+                    if (typeof body === 'string') {
+                        try { body = JSON.parse(body); } catch (e) { /* ignore if not json */ }
+                    }
+					return objectPath.get(body as object, paramName) as string | undefined;
+				} catch (e: any) {
+					throw new NodeOperationError(node ?? {} as INode, `Failed to get data from webhook body path '${paramName}': ${e.message}`);
+				}
+			}
+		} else {
+			// --- Injection into HTTP Request Options ---
+			const options = data as IHttpRequestOptions;
+			if (location === 'query') {
+				options.qs = options.qs ?? {};
+				(options.qs as IDataObject)[paramName] = valueToSet;
+			} else if (location === 'header') {
+				options.headers = options.headers ?? {};
+				(options.headers as IDataObject)[paramName] = valueToSet;
+			} else if (location === 'bodyJsonPath') {
+				try {
+					// Ensure body exists and is an object for path setting
+					if (typeof options.body !== 'object' || options.body === null) {
+						// If body is stringified JSON, parse it. If not JSON or empty, initialize.
+						if (typeof options.body === 'string' && options.body.trim().startsWith('{')) {
+							try { options.body = JSON.parse(options.body); }
+							catch (e) { options.body = {}; } // Initialize if parsing fails
+						} else {
+							options.body = {}; // Initialize if not object or parseable JSON
+						}
+					}
+                    // Ensure body is not null after potential parsing/initialization
+                    if (options.body === null) options.body = {};
+
+					objectPath.set(options.body as object, paramName, valueToSet);
+                    // If the library needs the body to be stringified for JSON content-type, do it AFTER setting the path
+                    // Check if `options.json` is true AND body is now an object
+                    if (options.json && typeof options.body === 'object' && options.body !== null) {
+                        // Stringify only if the request helper doesn't do it automatically based on options.json
+                        // Most helpers (like `request`) handle object bodies automatically when options.json=true
+                        // So, usually, no need to stringify here. If needed, uncomment:
+                        // options.body = JSON.stringify(options.body);
+                    }
+
+				} catch (e: any) {
+					throw new NodeOperationError(node ?? {} as INode, `Failed to set data in request body path '${paramName}': ${e.message}`);
+				}
+			}
+			return void 0; // Indicate success for injection
+		}
 	}
 
-
 	// --- Execute Method ---
+	// 'this' context is IExecuteFunctions
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const items = this.getInputData();
 		const returnData: INodeExecutionData[] = [];
-		// Get global option default once
-		const fullResponseGlobal = this.getNodeParameter('options.fullResponse', 0, false) as boolean;
+		const node = this.getNode(); // Get node instance for context
 
-		// Get static data store for webhook listeners
-		// Using 'node' scope should isolate listeners per node instance within the workflow execution
+		// Retrieve or initialize webhook listeners from static data
 		const staticData = this.getWorkflowStaticData('node');
 		if (!staticData.listeners) {
 			staticData.listeners = {};
@@ -492,50 +498,59 @@ export class AsyncHttpRequest implements INodeType {
 
 
 		for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
-			// Reset per-item options inside the loop
-			const method = this.getNodeParameter('method', itemIndex, 'GET') as IHttpRequestMethods;
-			const url = this.getNodeParameter('url', itemIndex, '') as string;
-			const authentication = this.getNodeParameter('authentication', itemIndex, 'none') as string;
-			const sendBody = this.getNodeParameter('sendBody', itemIndex, false) as boolean;
-			const contentType = this.getNodeParameter('contentType', itemIndex, 'json') as string;
-			const specifyBody = this.getNodeParameter('specifyBody', itemIndex, 'keypair') as string;
-			const rawContentType = this.getNodeParameter('rawContentType', itemIndex, 'text/plain') as string;
-			const sendMultipart = this.getNodeParameter('sendMultipart', itemIndex, false) as boolean;
-			const sendQuery = this.getNodeParameter('sendQuery', itemIndex, false) as boolean;
-			const sendHeaders = this.getNodeParameter('sendHeaders', itemIndex, false) as boolean;
-			const options = this.getNodeParameter('options', itemIndex, {}) as IDataObject; // Contains various sub-options
-			// Use item-specific value or fallback to global default
-			const fullResponse = this.getNodeParameter('options.fullResponse', itemIndex, fullResponseGlobal) as boolean;
-			const waitForWebhookResponse = this.getNodeParameter('waitForWebhookResponse', itemIndex, false) as boolean;
-			const webhookConfig = this.getNodeParameter('webhookConfig', itemIndex, {}) as IWebhookConfig;
-
-			// Use try-catch for each item to handle potential errors and continueOnFail
 			try {
+				const authentication = this.getNodeParameter('authentication', itemIndex) as string;
+				const url = this.getNodeParameter('url', itemIndex, '') as string;
+				const method = this.getNodeParameter('method', itemIndex, 'GET') as IHttpRequestMethods;
+				const sendBody = this.getNodeParameter('sendBody', itemIndex, false) as boolean;
+				const contentType = this.getNodeParameter('contentType', itemIndex, 'json') as string;
+				const rawContentType = this.getNodeParameter('rawContentType', itemIndex, 'text/plain') as string;
+				const specifyBody = this.getNodeParameter('specifyBody', itemIndex, 'keypair') as string;
+				const sendMultipart = this.getNodeParameter('sendMultipart', itemIndex, false) as boolean;
+				const sendQuery = this.getNodeParameter('sendQuery', itemIndex, false) as boolean;
+				const sendHeaders = this.getNodeParameter('sendHeaders', itemIndex, false) as boolean;
+				const options = this.getNodeParameter('options', itemIndex, {}) as IDataObject; // Use IDataObject for flexibility
+				const fullResponse = options.fullResponse as boolean ?? false;
+
+				const waitForWebhookResponse = this.getNodeParameter('waitForWebhookResponse', itemIndex, false) as boolean;
+				const webhookConfig = this.getNodeParameter('webhookConfig', itemIndex, {}) as IWebhookConfig;
+
+				// --- Base Request Options ---
 				const requestOptions: IHttpRequestOptions = {
 					method,
 					uri: url,
 					gzip: true,
-					rejectUnauthorized: !this.getNodeParameter('options.allowUnauthorizedCerts', itemIndex, false) as boolean,
-					timeout: this.getNodeParameter('options.timeout', itemIndex, 10000) as number,
-					proxy: this.getNodeParameter('options.proxy', itemIndex, undefined) as string | undefined,
+					rejectUnauthorized: !options.allowUnauthorizedCerts as boolean ?? true, // Default to true if not set
+					timeout: options.timeout as number || 10000, // Default timeout
+					// Proxy: Handled by casting requestOptions to 'any' below due to type issues
 					headers: {},
 					qs: {},
-					responseType: 'arraybuffer', // Default to buffer, adjust later
-					// Request helpers generally handle full response internally, don't need resolveWithFullResponse here
+					// responseType: Handled by casting requestOptions to 'any' below
+					// encoding: Handled by casting requestOptions to 'any' below
+					// body/json/formData: Set later based on content type
 				};
 
-				// --- Response Format & Encoding ---
-				const responseFormat = this.getNodeParameter('options.responseFormat', itemIndex, 'autodetect') as string;
-				const responseCharacterEncoding = this.getNodeParameter('options.responseCharacterEncoding', itemIndex, 'autodetect') as string;
-
-				if (responseFormat === 'json') requestOptions.responseType = 'json';
-				else if (responseFormat === 'text') requestOptions.responseType = 'text';
-				// else remains 'arraybuffer' for file/autodetect
-
-				if (requestOptions.responseType === 'text' && responseCharacterEncoding !== 'autodetect') {
-					requestOptions.encoding = responseCharacterEncoding as BufferEncoding;
+				// --- Proxy ---
+				// Cast to 'any' because IHttpRequestOptions might incorrectly type 'proxy' as object instead of string
+				if (options.proxy) {
+					(requestOptions as any).proxy = options.proxy as string;
 				}
-				// Note: encoding for JSON is usually handled by the library, default UTF8
+
+				// --- Response Format & Encoding ---
+				const responseFormat = options.responseFormat as string || 'autodetect';
+				const responseCharacterEncoding = options.responseCharacterEncoding as string || 'autodetect';
+
+				// Cast to 'any' as IHttpRequestOptions might be missing 'responseType'/'encoding'
+				const reqOptsAny = requestOptions as any;
+				if (responseFormat === 'json') reqOptsAny.responseType = 'json';
+				else if (responseFormat === 'text') reqOptsAny.responseType = 'text';
+				else reqOptsAny.responseType = 'arraybuffer'; // Default to buffer for file/autodetect
+
+				if (reqOptsAny.responseType === 'text' && responseCharacterEncoding !== 'autodetect') {
+					reqOptsAny.encoding = responseCharacterEncoding as BufferEncoding;
+				} else {
+                    reqOptsAny.encoding = null; // Let request library handle buffer decoding or default (UTF8) for JSON/Text
+                }
 
 
 				// --- Headers ---
@@ -562,7 +577,7 @@ export class AsyncHttpRequest implements INodeType {
 					requestOptions.headers = requestOptions.headers ?? {}; // Ensure headers exist
 
 					if (contentType === 'json') {
-						requestOptions.headers['content-type'] = 'application/json; charset=utf-8';
+						(requestOptions.headers as IDataObject)['content-type'] = 'application/json; charset=utf-8';
 						if (specifyBody === 'keypair') {
 							const bodyParams = this.getNodeParameter('bodyParameters.values', itemIndex, []) as Array<{ name?: string, value?: any }>;
 							bodyData = bodyParams.reduce((acc, param) => {
@@ -572,13 +587,13 @@ export class AsyncHttpRequest implements INodeType {
 						} else if (specifyBody === 'json') {
 							const jsonBodyStr = this.getNodeParameter('jsonBody', itemIndex, '{}') as string;
 							try { bodyData = JSON.parse(jsonBodyStr); }
-							catch (e: any) { throw new NodeOperationError(this.getNode(), `Invalid JSON in body: ${e.message}`, { itemIndex }); }
+							catch (e: any) { throw new NodeOperationError(node, `Invalid JSON in body: ${e.message}`, { itemIndex }); }
 						}
 						requestOptions.json = true; // Use json flag for library
 						requestOptions.body = bodyData; // Assign prepared body
 
 					} else if (contentType === 'form-urlencoded') {
-						requestOptions.headers['content-type'] = 'application/x-www-form-urlencoded; charset=utf-8';
+						(requestOptions.headers as IDataObject)['content-type'] = 'application/x-www-form-urlencoded; charset=utf-8';
 						if (specifyBody === 'keypair') {
 							const bodyParams = this.getNodeParameter('bodyParameters.values', itemIndex, []) as Array<{ name?: string, value?: string }>;
 							const params = new URLSearchParams();
@@ -587,7 +602,7 @@ export class AsyncHttpRequest implements INodeType {
 							requestOptions.body = bodyData;
 							requestOptions.json = false; // Explicitly not JSON
 						} else {
-							throw new NodeOperationError(this.getNode(), 'For form-urlencoded, use "Using Fields Below".', { itemIndex });
+							throw new NodeOperationError(node, 'For form-urlencoded, use "Using Fields Below".', { itemIndex });
 						}
 
 					} else if (contentType === 'multipart-form-data') {
@@ -598,7 +613,8 @@ export class AsyncHttpRequest implements INodeType {
 								if (!part.name) continue;
 								let value = part.value;
 								if (part.type === 'binary') {
-									const binaryData = await this.helpers.assertBinaryData(itemIndex, value); // Use await
+									// Use await directly with this.helpers
+									const binaryData = await this.helpers.assertBinaryData(itemIndex, value);
 									const partOptions: { contentType?: string, filename?: string } = {};
 									if (part.contentType) partOptions.contentType = part.contentType;
 									const filename = part.filename || binaryData.fileName;
@@ -609,34 +625,31 @@ export class AsyncHttpRequest implements INodeType {
 								}
 								formData[part.name] = value;
 							}
-							requestOptions.formData = formData; // Assign formData object
-							delete requestOptions.headers['content-type']; // Let library set multipart header
+							// Cast to 'any' as IHttpRequestOptions might be missing 'formData'
+							(requestOptions as any).formData = formData; // Assign formData object
+							delete (requestOptions.headers as IDataObject)['content-type']; // Let library set multipart header
 							requestOptions.json = false;
 						} else {
-							throw new NodeOperationError(this.getNode(), 'For multipart/form-data, enable "Send Form-Data".', { itemIndex });
+							throw new NodeOperationError(node, 'For multipart/form-data, enable "Send Form-Data".', { itemIndex });
 						}
 
 					} else if (contentType === 'raw') {
-						requestOptions.headers['content-type'] = rawContentType;
+						(requestOptions.headers as IDataObject)['content-type'] = rawContentType;
 						bodyData = this.getNodeParameter('rawBody', itemIndex, '') as string;
 						requestOptions.body = bodyData;
 						requestOptions.json = false;
 
 					} else if (contentType === 'none') {
-						delete requestOptions.headers['content-type'];
+						delete (requestOptions.headers as IDataObject)['content-type'];
 						// Do not set body/json properties
 					}
-					// Assign the prepared bodyData (if any) if not already assigned (e.g. for json/form)
-                    // if (bodyData !== undefined && requestOptions.body === undefined) {
-                    //     requestOptions.body = bodyData;
-                    // }
 				} // End of sendBody block
 
 
 				// --- Webhook Wait Logic ---
 				if (waitForWebhookResponse) {
 					const correlationIdValue = uuidv4();
-					const webhookUniqueId = `${this.getExecutionId()}-${this.getNode().id}-${itemIndex}-${uuidv4().substring(0, 8)}`;
+					const webhookUniqueId = `${this.getExecutionId()}-${node.id}-${itemIndex}-${uuidv4().substring(0, 8)}`;
 
 					const {
 						webhookMethod = 'POST',
@@ -650,13 +663,14 @@ export class AsyncHttpRequest implements INodeType {
 
 					// 1. Get Webhook URL
 					// Use the specific webhook name 'default' defined in description
+					// Use this.getWebhookUrl() directly
 					const webhookUrl = this.getWebhookUrl('default');
                     if (!webhookUrl) {
-                         throw new NodeOperationError(this.getNode(), 'Could not generate webhook URL. Is Instance Base URL configured in n8n?', { itemIndex });
+                         throw new NodeOperationError(node, 'Could not generate webhook URL. Is Instance Base URL configured in n8n?', { itemIndex });
                     }
                     // Append the unique ID to the path manually IF getWebhookUrl doesn't handle :webhookId replacement
                     // Check n8n version behavior. Assuming it needs manual appending for now:
-                    const finalWebhookUrl = `${webhookUrl}/webhook/${webhookUniqueId}`;
+                    const finalWebhookUrl = webhookUrl.replace(':webhookId', webhookUniqueId);
 
 
 					// 2. Inject Correlation ID (if needed)
@@ -666,7 +680,7 @@ export class AsyncHttpRequest implements INodeType {
 						requestOptions, // Pass options object
 						correlationIdValue,
 						false, // isWebhookRequest = false
-						this.getNode(),
+						node, // Pass node context
 					);
 
 					// 3. Inject Callback URL
@@ -676,7 +690,7 @@ export class AsyncHttpRequest implements INodeType {
 						requestOptions, // Pass options object
 						finalWebhookUrl, // Pass the constructed URL
 						false, // isWebhookRequest = false
-						this.getNode(),
+						node, // Pass node context
 					);
 
 					// 4. Setup Waiter Promise & Listener
@@ -688,7 +702,9 @@ export class AsyncHttpRequest implements INodeType {
 								const listenerItemIndex = listener.itemIndex;
 								delete webhookListeners[webhookUniqueId]; // Clean up listener
 								this.logger.warn(`Webhook ${webhookUniqueId} timed out after ${timeoutWebhook} seconds.`);
-								reject(new NodeOperationError(this.getNode(), `Webhook wait timed out for ID ${webhookUniqueId}`, { itemIndex: listenerItemIndex }));
+								reject(new NodeOperationError(node, `Webhook wait timed out for ID ${webhookUniqueId}`, { itemIndex: listenerItemIndex }));
+							} else {
+								this.logger.warn(`Timeout triggered for webhook ${webhookUniqueId}, but listener was already removed.`);
 							}
 						}, timeoutSeconds);
 
@@ -708,8 +724,8 @@ export class AsyncHttpRequest implements INodeType {
 					// 5. Send Initial Request
 					try {
 						this.logger.debug(`Sending initial request [${itemIndex}] for ${webhookUniqueId} (Correlation: ${correlationIdValue})`);
-						// Use the correct 'this' context for helpers
-						const initialResponse = await (this.helpers as RequestHelperFunctions).requestWithAuthentication(
+						// Use this.helpers directly
+						const initialResponse = await this.helpers.requestWithAuthentication(
 							authentication,
 							requestOptions,
 							itemIndex,
@@ -726,7 +742,7 @@ export class AsyncHttpRequest implements INodeType {
 						}
 
 						// Re-throw unless ignoring response code AND it's a NodeApiError
-						if (!this.getNodeParameter('options.ignoreResponseCode', itemIndex, false) || !isNodeApiError(error)) {
+						if (!options.ignoreResponseCode || !isNodeApiError(error)) {
 							throw error;
 						} else {
 							// Log ignored error and proceed to wait for webhook
@@ -745,7 +761,8 @@ export class AsyncHttpRequest implements INodeType {
 					// --- Standard HTTP Request (No Webhook Wait) ---
 					let response: NodeExecutionWithMetadata; // Contains full response object from helper
 					try {
-						response = await (this.helpers as RequestHelperFunctions).requestWithAuthentication(
+						// Use this.helpers directly
+						response = await this.helpers.requestWithAuthentication(
 							authentication,
 							requestOptions,
 							itemIndex,
@@ -760,41 +777,46 @@ export class AsyncHttpRequest implements INodeType {
 						// Handle formatting based on user choice OR full response
 						if (!fullResponse) {
 							if (responseFormat === 'file') {
-								if (!isBuffer) throw new NodeOperationError(this.getNode(), 'Response body is not binary, cannot format as file.', { itemIndex });
-								const mimeType = response.headers?.['content-type']?.split(';')[0] || 'application/octet-stream';
-								const binaryData = await (this.helpers as BinaryHelperFunctions).prepareBinaryData(responseBody, undefined, mimeType); // Use await
+								if (!isBuffer) throw new NodeOperationError(node, 'Response body is not binary, cannot format as file.', { itemIndex });
+								const headers = response.headers as IDataObject | undefined; // Assert type
+								const mimeType = headers?.['content-type']?.split(';')[0] || 'application/octet-stream';
+								// Use this.helpers directly
+								const binaryData = await this.helpers.prepareBinaryData(responseBody, undefined, mimeType);
 								binaryPropertyName = 'data'; // Standard n8n binary property name
 								returnData.push({ json: {}, binary: { [binaryPropertyName]: binaryData }, pairedItem: { item: itemIndex } });
 								continue; // Skip standard return push
 
 							} else if (responseFormat === 'text') {
-								responseData = isBuffer ? responseBody.toString(requestOptions.encoding || undefined) : String(responseBody);
+								const encoding = reqOptsAny.encoding as BufferEncoding | undefined; // Use encoding from options
+								responseData = isBuffer ? responseBody.toString(encoding) : String(responseBody);
 							} else if (responseFormat === 'json') {
 								if (typeof responseBody === 'object' && !isBuffer) {
 									responseData = responseBody; // Already parsed by helper
 								} else {
-									const textBody = isBuffer ? responseBody.toString(requestOptions.encoding || 'utf8') : String(responseBody);
+									const encoding = reqOptsAny.encoding as BufferEncoding | undefined ?? 'utf8'; // Default UTF8 for JSON parsing
+									const textBody = isBuffer ? responseBody.toString(encoding) : String(responseBody);
 									try { responseData = JSON.parse(textBody); }
-									catch (e: any) { throw new NodeOperationError(this.getNode(), `Response body not valid JSON: ${e.message}`, { itemIndex }); }
+									catch (e: any) { throw new NodeOperationError(node, `Response body not valid JSON: ${e.message}`, { itemIndex }); }
 								}
 							} else { // Autodetect
 								if (typeof responseBody === 'object' && !isBuffer) {
 									responseData = responseBody; // Assume JSON if object
 								} else {
-									// Try decoding as text, maybe attempt JSON parse?
-									responseData = isBuffer ? responseBody.toString(requestOptions.encoding || 'utf8') : String(responseBody);
+									// Decode as text, default UTF8 if not specified
+									const encoding = reqOptsAny.encoding as BufferEncoding | undefined ?? 'utf8';
+									responseData = isBuffer ? responseBody.toString(encoding) : String(responseBody);
 									// Optional: If content-type suggests JSON, try parsing
-                                    // if (response.headers?.['content-type']?.includes('json')) {
-                                    //     try { responseData = JSON.parse(responseData); } catch(e) { /* Ignore if parse fails */ }
-                                    // }
+									const headers = response.headers as IDataObject | undefined; // Assert type
+                                    if (headers?.['content-type']?.includes('json') && typeof responseData === 'string') {
+                                        try { responseData = JSON.parse(responseData); } catch(e) { /* Ignore if parse fails */ }
+                                    }
 								}
 							}
 						} else { // Full Response requested
 							let processedBody = responseBody;
 							if (isBuffer) {
-                                // Provide info about buffer instead of raw data for full response JSON
-                                const bufferInfo = `Buffer data (length: ${responseBody.length}, type: ${response.headers?.['content-type']})`;
-                                // You could include base64 snippet if needed: responseBody.toString('base64').substring(0, 100)
+                                const headers = response.headers as IDataObject | undefined; // Assert type
+                                const bufferInfo = `Buffer data (length: ${responseBody.length}, type: ${headers?.['content-type']})`;
 								processedBody = bufferInfo;
 							}
 							responseData = {
@@ -812,34 +834,41 @@ export class AsyncHttpRequest implements INodeType {
 
 					} catch (error: any) {
 						// Handle errors, especially ignored ones
-						if (!this.getNodeParameter('options.ignoreResponseCode', itemIndex, false) || !isNodeApiError(error)) {
+						if (!options.ignoreResponseCode || !isNodeApiError(error)) {
 							throw error; // Re-throw if not ignoring or not standard API error
 						}
 
 						// Format ignored error for output
-						const errorContext = error.context ?? {};
-						const errorOutput = {
+						const errorContext = error.context as IDataObject ?? {}; // Assert type or default
+						const errorOutput: IDataObject = { // Ensure errorOutput is IDataObject
 							error: {
 								message: error.message,
-								stack: typeof error.stack === 'string' ? error.stack.split('\n').map((l: string) => l.trim()) : undefined,
+								// stack: Handled below with type check
 								httpCode: errorContext.statusCode,
 								httpMessage: errorContext.statusMessage,
 								headers: errorContext.headers,
 								body: errorContext.body, // Body might be included in error context
 							},
 						};
+                        // Safely add stack
+                        if (error.stack && typeof error.stack === 'string') {
+                           (errorOutput.error as IDataObject).stack = error.stack.split('\n').map((l: string) => l.trim());
+                        }
+
 						returnData.push({ json: errorOutput, pairedItem: { item: itemIndex } });
 					}
 				} // End of standard request block
 
 			} catch (error: any) {
 				// Handle errors for the item loop (respect continueOnFail)
-				if (this.continueOnFail()) {
+				if (this.continueOnFail()) { // Use the method here
 					const errorJson: IDataObject = { error: { message: error.message } };
+					// Safely add stack and context
 					if (error.stack && typeof error.stack === 'string') errorJson.error.stack = error.stack.split('\n').map((l: string) => l.trim());
 					if (error instanceof NodeOperationError && error.context) errorJson.error.context = error.context;
 					else if (isNodeApiError(error) && error.context) errorJson.error.context = error.context;
 
+					// Ensure pairedItem is included for correct mapping
 					returnData.push({ json: errorJson, pairedItem: { item: itemIndex } });
 					continue; // Continue to next item
 				}
@@ -871,15 +900,14 @@ export class AsyncHttpRequest implements INodeType {
 
 		// Retrieve listeners from static data
 		const staticData = this.getWorkflowStaticData('node');
+		// Ensure listeners object exists in staticData
 		const webhookListeners = staticData.listeners as { [key: string]: IWebhookListener } || {};
 		const listenerData = webhookListeners[webhookUniqueId];
 
 		if (!listenerData) {
 			this.logger.warn(`Webhook received for unknown or timed-out listener ID: ${webhookUniqueId}. Ignoring.`);
 			// Throw an error to signal failure (e.g., n8n sends 404 or 500)
-            // Returning empty object might lead to default 200 OK, which is wrong.
-			throw new NodeOperationError(node, `Webhook listener not found or timed out for ID: ${webhookUniqueId}`);
-            // return {}; // Avoid returning empty object which implies success
+            throw new NodeOperationError(node, `Webhook listener not found or timed out for ID: ${webhookUniqueId}`);
 		}
 
 		// Destructure listener data
@@ -891,7 +919,6 @@ export class AsyncHttpRequest implements INodeType {
 			this.logger.warn(`Webhook ${webhookUniqueId}: Method mismatch. Received ${receivedMethod}, expected ${expectedMethod}. Ignoring.`);
 			// Throw error to signal method not allowed (n8n might send 405)
             throw new NodeOperationError(node, `Incorrect HTTP method ${receivedMethod} used for webhook ${webhookUniqueId}. Expected ${expectedMethod}.`, { itemIndex });
-            // return {}; // Avoid implying success
 		}
 
 		try {
@@ -902,7 +929,7 @@ export class AsyncHttpRequest implements INodeType {
 				req, // Pass webhook request object
 				undefined, // Not setting a value
 				true, // isWebhookRequest = true
-				node,
+				node, // Pass node context
 			) as string | undefined;
 
 			this.logger.debug(`Webhook ${webhookUniqueId}: Expecting Correlation ID: ${correlationId}, Received: ${receivedCorrelationId}`);
@@ -911,11 +938,15 @@ export class AsyncHttpRequest implements INodeType {
 			if (receivedCorrelationId === correlationId) {
 				clearTimeout(timeoutTimer); // Stop timeout timer
 				delete webhookListeners[webhookUniqueId]; // Clean up listener
+				// NOTE: Persisting staticData changes might require an explicit call if necessary,
+				// but usually modifying the retrieved object reference is sufficient for the current execution.
 				this.logger.info(`Webhook ${webhookUniqueId}: Correlation ID match! Resolving promise.`);
 
 				// Construct response data based on config
 				const webhookResult: IDataObject = {};
 				const includes = Array.isArray(webhookConfig.webhookResponseIncludes) ? webhookConfig.webhookResponseIncludes : ['body'];
+
+				// Assign data, accepting 'unknown' for body
 				if (includes.includes('body')) webhookResult.body = req.body;
 				if (includes.includes('headers')) webhookResult.headers = req.headers;
 				if (includes.includes('query')) webhookResult.query = req.query;
@@ -928,23 +959,26 @@ export class AsyncHttpRequest implements INodeType {
 			} else {
 				// Correlation ID mismatch - log and ignore, keep listener active
 				this.logger.warn(`Webhook ${webhookUniqueId}: Correlation ID mismatch. Expected ${correlationId}, got ${receivedCorrelationId}. Ignoring call.`);
-				// Let n8n send the default response (200 OK), but don't resolve/reject promise
-                // We throw an error here to signal the mismatch more clearly than a silent 200 OK
+				// Throw an error to signal the mismatch clearly (n8n might send 400 or 404 depending on interpretation)
                 throw new NodeOperationError(node, `Correlation ID mismatch for webhook ${webhookUniqueId}.`, { itemIndex });
-                // return { noWebhookResponse: false }; // Still allow default response
 			}
 		} catch (error: any) {
-			// Error during webhook processing (e.g., extracting ID)
+			// Error during webhook processing (e.g., extracting ID, correlation mismatch error)
 			this.logger.error(`Webhook ${webhookUniqueId}: Error processing webhook: ${error.message}`, { error: error.stack });
 
-			// Clean up listener and reject the promise
-			clearTimeout(timeoutTimer);
-			delete webhookListeners[webhookUniqueId];
-			reject(new NodeOperationError(node, `Error processing webhook ${webhookUniqueId}: ${error.message}`, { itemIndex }));
+            // Check if listener still exists before cleaning up (it might have been removed by timeout already)
+            if (webhookListeners[webhookUniqueId]) {
+			    clearTimeout(timeoutTimer);
+			    delete webhookListeners[webhookUniqueId];
+                 // Reject the promise only if the error wasn't the explicit mismatch error thrown above
+                 if (!(error instanceof NodeOperationError && error.message.includes('Correlation ID mismatch'))) {
+                    reject(new NodeOperationError(node, `Error processing webhook ${webhookUniqueId}: ${error.message}`, { itemIndex }));
+                 }
+            }
+
 
 			// Re-throw the error so n8n core sends an error response (e.g., 500)
 			throw error;
-            // return {}; // Avoid implying success
 		}
 	} // End of webhook method
 } // End of class AsyncHttpRequest
