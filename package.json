@@ -1,18 +1,18 @@
 {
-    "name": "n8n-nodes-async-http-request", // Choose a unique package name
+    "name": "n8n-nodes-async-http-request",
     "version": "0.1.0",
     "description": "An n8n node to send HTTP requests and wait for asynchronous webhook responses.",
-    "main": "dist/nodes/AsyncHttpRequest/AsyncHttpRequest.node.js", // Entry point for the node code
+    "main": "dist/nodes/AsyncHttpRequest/AsyncHttpRequest.node.js",
     "scripts": {
-      "build": "tsc && gulp build:icons", // Compile TS and handle icons (requires gulp setup for icons)
-      "dev": "tsc --watch", // Watch for changes and recompile TS
-      "lint": "eslint nodes/**/*.ts", // Add linting if desired
-      "format": "prettier --write nodes/**/*.ts" // Add formatting if desired
+      "build": "tsc && gulp build:icons",
+      "dev": "tsc --watch",
+      "lint": "eslint nodes/**/*.ts",
+      "format": "prettier --write nodes/**/*.ts"
     },
-    "files": [ // Files to include when publishing to npm
+    "files": [
       "dist"
     ],
-    "keywords": [ // Helps others find your node
+    "keywords": [
       "n8n-community-node-package",
       "n8n",
       "http",
@@ -20,47 +20,40 @@
       "async",
       "webhook"
     ],
-    "author": "Kunthawat", // Replace with your info
-    "license": "MIT", // Or your preferred license
-    "homepage": "https://github.com/kunthawat/n8n-AsyncHttpRequest", // Link to your repo (optional)
+    "author": "Your Name or Organization",
+    "license": "MIT",
+    "homepage": "https://github.com/your-repo/n8n-nodes-async-http-request#readme",
     "repository": {
       "type": "git",
-      "url": "git+https://github.com/kunthawat/n8n-AsyncHttpRequest.git" // Link to your repo (optional)
+      "url": "git+https://github.com/your-repo/n8n-nodes-async-http-request.git"
     },
     "bugs": {
-      "url": "https://github.com/kunthawat/n8n-AsyncHttpRequest/issues" // Link to issues (optional)
+      "url": "https://github.com/your-repo/n8n-nodes-async-http-request/issues"
     },
-    "n8n": { // Crucial section for n8n to find your node(s)
-      "n8nNodesApiVersion": 1, // API version this node was built for
+    "n8n": {
+      "n8nNodesApiVersion": 1,
       "nodes": [
-        // Path relative to the package root AFTER compilation
         "dist/nodes/AsyncHttpRequest/AsyncHttpRequest.node.js"
       ]
-      // "credentials": [ // Add if you have custom credentials
-      //   "dist/credentials/YourCredentialType.credentials.js"
-      // ]
     },
-    "devDependencies": { // Dependencies needed for development/build
-      "@types/express": "^4.17.13", // Often needed for webhook types if not using n8n's built-ins
-      "@types/node": "^18.0.0", // Or match your Node.js version
+    "devDependencies": {
+      "@types/express": "^4.17.13",
+      "@types/node": "^18.0.0",
       "@types/object-path": "^0.11.1",
       "@types/request-promise-native": "^1.0.18",
-      "@types/uuid": "^8.3.4", // Or latest compatible version
-      "@typescript-eslint/parser": "~5.45", // Example for linting
-      "eslint": "~8.28", // Example for linting
-      "eslint-plugin-n8n-nodes-base": "^1.11.0", // n8n specific lint rules
-      "gulp": "^4.0.2", // Often used for icon handling in n8n node builds
-      "n8n-workflow": "*", // Use "*" or pin to a specific n8n version range if needed
-      "prettier": "~2.8", // Example for formatting
-      "typescript": "~4.8.4" // Or latest compatible version
+      "@types/uuid": "^8.3.4",
+      "@typescript-eslint/parser": "~5.45",
+      "eslint": "~8.28",
+      "eslint-plugin-n8n-nodes-base": "^1.11.0",
+      "gulp": "^4.0.2",
+      "n8n-workflow": "*",
+      "prettier": "~2.8",
+      "typescript": "~4.8.4"
     },
-    "dependencies": { // Runtime dependencies
+    "dependencies": {
       "object-path": "^0.11.8",
-      "request-promise-native": "^1.0.9", // HTTP client library often used internally by n8n helpers
-      "uuid": "^8.3.2" // Or latest compatible version
+      "request-promise-native": "^1.0.9",
+      "uuid": "^8.3.2"
     },
-    "peerDependencies": { // Declare compatibility without forcing installation
-      // Optional, but can be good practice if you rely on specific n8n core features
-      // "n8n-core": ">=0.180.0" // Example version range
-    }
+    "peerDependencies": {}
   }
